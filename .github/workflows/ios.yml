@@ -44,20 +44,28 @@ jobs:
             echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
           fi
       - name: Prepare the iOS project
+        id: prepare
         run: python3 Scripts/prepare.py "$ENGINE"
-      - name: Build and test on the simulator
-        run: bash Scripts/simulator.sh "$IOS_MAJOR"
       - name: Build unsigned iPhone archive
         run: bash Scripts/package.sh
-      - name: Build downloads
+      - name: Upload iPhone build
         uses: actions/upload-artifact@v4
         with:
-          name: reniOS-${{ matrix.engine }}-iOS-${{ matrix.os }}
+          name: reniOS-IPA-${{ matrix.engine }}-iOS-${{ matrix.os }}
+          path: out/reniOS-unsigned.ipa
+          if-no-files-found: error
+      - name: Build and test on the simulator
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        run: bash Scripts/simulator.sh "$IOS_MAJOR"
+      - name: Upload simulator build and keyboard results
+        uses: actions/upload-artifact@v4
+        with:
+          name: reniOS-simulator-${{ matrix.engine }}-iOS-${{ matrix.os }}
           path: |
-            out/reniOS-unsigned.ipa
             out/reniOS-simulator.zip
             out/keyboard.png
             out/keyboard-probe.json
+            out/diagnostics/library.png
           if-no-files-found: error
       - name: Simulator diagnostics
         if: failure()

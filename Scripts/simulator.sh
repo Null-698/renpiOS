@@ -18,19 +18,21 @@ runtime=$(xcrun simctl list runtimes -j | jq -r --arg version "$major" '
   [.runtimes[] | select(.isAvailable and (.identifier | contains(".iOS-")) and
   (.version | split(".")[0] == $version))] | sort_by(.version | split(".") | map(tonumber)) | .[-1].identifier // empty')
 test -n "$runtime"
-device_type=$(xcrun simctl list devicetypes -j | jq -r --argjson major "$major" '
-  [.devicetypes[] | select(.name | test("^iPhone (17|18)"))
-  | select(.minRuntimeVersion < (($major + 1) * 65536))]
-  | first | .identifier')
-if [[ -z "$device_type" || "$device_type" == null ]]; then
-  device_type=com.apple.CoreSimulator.SimDeviceType.iPhone-17
+udid=$(xcrun simctl list devices available -j | jq -r --arg runtime "$runtime" '
+  [.devices[$runtime][]? | select(.isAvailable and (.name | startswith("iPhone")))] |
+  sort_by(if (.name == "iPhone 17" or .name == "iPhone 18") then 0 else 1 end) |
+  .[0].udid // empty')
+if [[ -z "$udid" ]]; then
+  xcrun simctl list
+  echo "No preconfigured iPhone for $runtime" >&2
+  exit 1
 fi
-udid=$(xcrun simctl create "reniOS CI $major" "$device_type" "$runtime")
+echo "Testing $bundle on $runtime ($udid)"
 capture() {
   xcrun simctl io "$udid" screenshot out/diagnostics/last-screen.png >/dev/null 2>&1 || true
   xcrun simctl spawn "$udid" log show --last 4m --predicate 'process == "reniOS"' \
     > out/diagnostics/reniOS.log 2>&1 || true
-  xcrun simctl delete "$udid" >/dev/null 2>&1 || true
+  xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true
 }
 trap capture EXIT
 xcrun simctl boot "$udid"
