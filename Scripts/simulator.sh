@@ -34,15 +34,38 @@ capture() {
   bounded 8 xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true
 }
 trap capture EXIT
+device_data=$(xcrun simctl list devices -j | jq -r --arg udid "$udid" '
+  [.devices[][] | select(.udid == $udid)][0].dataPath // empty')
+if [[ -z "$device_data" ]]; then
+  device_data="$HOME/Library/Developer/CoreSimulator/Devices/$udid/data"
+fi
+python3 - "$device_data" <<'PYTHON'
+from pathlib import Path
+import plistlib
+import sys
+
+root = Path(sys.argv[1]) / "Library" / "Preferences"
+root.mkdir(parents=True, exist_ok=True)
+settings = {
+    "com.apple.keyboard.preferences": {
+        "DidShowContinuousPathIntroduction": True,
+        "DidShowGestureKeyboardIntroduction": True,
+        "KeyboardDidShowProductivityTutorial": True,
+        "UIKeyboardDidShowInternationalInfoIntroduction": True,
+    },
+    "com.apple.keyboard.ContinuousPath": {"DidShowContinuousPathIntroduction": True},
+}
+for domain, additions in settings.items():
+    path = root / f"{domain}.plist"
+    current = plistlib.loads(path.read_bytes()) if path.exists() else {}
+    current.update(additions)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_bytes(plistlib.dumps(current, fmt=plistlib.FMT_BINARY))
+    temporary.replace(path)
+PYTHON
+defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool NO
 bounded 150 xcrun simctl boot "$udid"
 bounded 240 xcrun simctl bootstatus "$udid" -b
-for preference in DidShowContinuousPathIntroduction DidShowGestureKeyboardIntroduction \
-  KeyboardDidShowProductivityTutorial UIKeyboardDidShowInternationalInfoIntroduction; do
-  bounded 30 xcrun simctl spawn "$udid" defaults write com.apple.keyboard.preferences "$preference" -int 1
-done
-# Older simulator runtimes read the QuickPath intro status from this domain.
-bounded 30 xcrun simctl spawn "$udid" defaults write com.apple.keyboard.ContinuousPath DidShowContinuousPathIntroduction -bool YES
-bounded 30 xcrun simctl spawn "$udid" defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool NO
 bounded 150 xcrun simctl install "$udid" "$app"
 bounded 35 xcrun simctl launch "$udid" "$bundle"
 sleep 3
