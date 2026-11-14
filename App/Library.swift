@@ -136,8 +136,8 @@ enum LibraryStore {
         }
         guard let prefix else { throw ImportFailure.missingGame }
 
-        let space = (try? destination.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))
-            ?.volumeAvailableCapacityForImportantUsage ?? Int64.max
+        let volume = try? destination.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        let space = volume?.volumeAvailableCapacityForImportantUsage ?? Int64.max
         var available = UInt64(max(0, space))
         var destinations: Set<String> = []
         for (entry, parts) in entries where parts.starts(with: prefix) && parts.count > prefix.count {
