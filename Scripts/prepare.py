@@ -20,9 +20,13 @@ VERSIONS = {
         "sdk.tar.bz2": "eb0a9be7f0fb13632fe25ceade9a8bed5a1b4d6b6e83bd19eeeb29e1a1bb4a45",
     },
     "8.6.0": {
-        "renios.zip": "046ad6d8774389c62fe939a18de4c67e6646ba9b4d35a0c1a95e8ec3253ef504",
-        "sdk.tar.bz2": "b3215982d6ce33446507b9a3f338c4dabd87b839484f01646087e2d85f143e38",
+        "renios.zip": "265e0f41698a1c4a1d1922412a31b70c640ec0f486e0914dd276479f8a27d65c",
+        "sdk.tar.bz2": "5763c1d5f35de4e62e29df5387636e8bca681050c6523564db17bc09a48b3dd4",
     },
+}
+PREVIOUS_PREVIEW = {
+    "renios.zip": "046ad6d8774389c62fe939a18de4c67e6646ba9b4d35a0c1a95e8ec3253ef504",
+    "sdk.tar.bz2": "b3215982d6ce33446507b9a3f338c4dabd87b839484f01646087e2d85f143e38",
 }
 BUNDLE_ID = "io.renios.player"
 ZIP_PACKAGE_ID = "B10000000000000000000001"
@@ -35,23 +39,27 @@ def digest(path):
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
-def get_archive(version, archive, expected, cache):
+def get_archive(version, archive, allowed, cache):
     filename = cache / f"{version}-{archive}"
-    upstream = f"https://www.renpy.org/dl/{version}/renpy-{version}-{archive}"
+    if version == "8.5.3":
+        upstream = f"https://github.com/renpy/renpy/releases/download/8.5.3.26051504/renpy-{version}-{archive}"
+    else:
+        upstream = f"https://www.renpy.org/dl/{version}/renpy-{version}-{archive}"
     if not filename.is_file():
         cache.mkdir(parents=True, exist_ok=True)
         partial = filename.with_suffix(".partial")
         try:
             subprocess.run(["curl", "--fail", "--location", "--silent", "--show-error",
                             "--retry", "2", "--output", str(partial), upstream], check=True)
-            if digest(partial) != expected:
+            if digest(partial) not in allowed:
                 raise ValueError(f"Checksum mismatch for {upstream}")
             partial.replace(filename)
         finally:
             partial.unlink(missing_ok=True)
-    if digest(filename) != expected:
+    checksum = digest(filename)
+    if checksum not in allowed:
         raise ValueError(f"Checksum mismatch for {filename}")
-    return filename
+    return filename, checksum
 
 
 def insert_after(text, marker, addition):
@@ -151,7 +159,14 @@ def app_icon(prototype):
 
 
 def prepare(version, cache):
-    archives = {name: get_archive(version, name, sha, cache) for name, sha in VERSIONS[version].items()}
+    candidates = [VERSIONS[version]]
+    if version == "8.6.0":
+        candidates.append(PREVIOUS_PREVIEW)
+    files = {name: get_archive(version, name, {release[name] for release in candidates}, cache)
+             for name in VERSIONS[version]}
+    if {name: value[1] for name, value in files.items()} not in candidates:
+        raise ValueError("The Ren’Py SDK and iOS pack belong to different release builds")
+    archives = {name: value[0] for name, value in files.items()}
     build = ROOT / ".build" / "project"
     if build.exists():
         shutil.rmtree(build)
