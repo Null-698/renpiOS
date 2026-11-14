@@ -34,10 +34,16 @@ capture() {
   bounded 8 xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true
 }
 trap capture EXIT
-bounded 35 xcrun simctl boot "$udid"
-bounded 120 xcrun simctl bootstatus "$udid" -b
-xcrun simctl spawn "$udid" defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool NO || true
-bounded 35 xcrun simctl install "$udid" "$app"
+bounded 150 xcrun simctl boot "$udid"
+bounded 240 xcrun simctl bootstatus "$udid" -b
+for preference in DidShowContinuousPathIntroduction DidShowGestureKeyboardIntroduction \
+  KeyboardDidShowProductivityTutorial UIKeyboardDidShowInternationalInfoIntroduction; do
+  bounded 30 xcrun simctl spawn "$udid" defaults write com.apple.keyboard.preferences "$preference" -int 1
+done
+# Older simulator runtimes read the QuickPath intro status from this domain.
+bounded 30 xcrun simctl spawn "$udid" defaults write com.apple.keyboard.ContinuousPath DidShowContinuousPathIntroduction -bool YES
+bounded 30 xcrun simctl spawn "$udid" defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool NO
+bounded 150 xcrun simctl install "$udid" "$app"
 bounded 35 xcrun simctl launch "$udid" "$bundle"
 sleep 3
 xcrun simctl io "$udid" screenshot out/diagnostics/library.png
@@ -45,15 +51,16 @@ xcrun simctl terminate "$udid" "$bundle"
 bounded 35 xcrun simctl launch "$udid" "$bundle" --keyboard-probe
 data=$(xcrun simctl get_app_container "$udid" "$bundle" data)
 probe="$data/Library/Caches/renios-keyboard.json"
-for ((attempt=0; attempt<45; attempt++)); do
+for ((attempt=0; attempt<75; attempt++)); do
   [[ ! -s "$probe" ]] || break
   sleep 1
 done
 if [[ ! -s "$probe" ]]; then
-  echo "Ren’Py did not report an on-screen keyboard within 45 seconds." >&2
+  echo "Ren’Py did not report an on-screen keyboard within 75 seconds." >&2
   exit 1
 fi
 cp "$probe" out/keyboard-probe.json
+cat out/keyboard-probe.json
 jq -e '.keyboardVisible == true and .viewportStable == true' out/keyboard-probe.json
 xcrun simctl io "$udid" screenshot out/keyboard.png
 ditto -c -k --keepParent "$app" out/reniOS-simulator.zip

@@ -4,8 +4,9 @@ init python:
     import os
 
 label start:
-    scene black
+    scene expression Solid("#232741")
     if os.environ.get("RENIOS_KEYBOARD_PROBE") == "1":
+        show text "The Observatory" at truecenter
         $ probe_name = renpy.input("Keyboard check", length=24)
         return
 

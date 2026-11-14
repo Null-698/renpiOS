@@ -162,6 +162,7 @@ private let cream = Color(red: 0.96, green: 0.92, blue: 0.84)
 private let amber = Color(red: 0.91, green: 0.69, blue: 0.45)
 
 private struct LibraryScreen: View {
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     var session: Session
     @State private var importing = false
     @State private var filter = ""
@@ -197,7 +198,7 @@ private struct LibraryScreen: View {
             }
             .background(ink.ignoresSafeArea())
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .principal) {
                     Text("reniOS").font(.system(.headline, design: .monospaced)).foregroundStyle(amber)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -233,7 +234,7 @@ private struct LibraryScreen: View {
     private var masthead: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text("Library")
-                .font(.system(size: 55, weight: .medium, design: .serif))
+                .font(.system(size: verticalSizeClass == .compact ? 42 : 55, weight: .medium, design: .serif))
                 .tracking(-2.5)
                 .foregroundStyle(cream)
                 .accessibilityAddTraits(.isHeader)
@@ -253,19 +254,20 @@ private struct LibraryScreen: View {
                 CoverArt(url: nil, tint: amber)
                 VStack(alignment: .leading, spacing: 8) {
                     Image(systemName: "book.closed").font(.system(size: 30, weight: .light))
-                    Text("A shelf of\nyour own.")
+                    Text("No stories yet")
                         .font(.system(size: 38, weight: .medium, design: .serif))
                 }
                 .foregroundStyle(cream)
                 .padding(23)
             }
-            .frame(height: 264)
+            .frame(height: verticalSizeClass == .compact ? 138 : 246)
             .clipShape(.rect(cornerRadius: 28))
 
             ViewThatFits {
                 HStack(spacing: 12) { importButton; demoButton }
                 VStack(alignment: .leading, spacing: 12) { importButton; demoButton }
             }
+            if session.isImporting { ProgressView().accessibilityLabel("Importing") }
         }
     }
 
