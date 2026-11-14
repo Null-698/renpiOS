@@ -1,0 +1,68 @@
+name: iOS builds
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Ren’Py ${{ matrix.engine }} · ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - engine: '8.5.3'
+            runner: macos-26
+            os: '26'
+          - engine: '8.6.0'
+            runner: macos-26
+            os: '26'
+          - engine: '8.6.0'
+            runner: xcode-27
+            os: '27'
+    env:
+      ENGINE: ${{ matrix.engine }}
+      IOS_MAJOR: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select Xcode
+        run: |
+          if [[ "$IOS_MAJOR" == 26 ]]; then
+            xcode=$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' | sort -V | tail -n1)
+            test -n "$xcode"
+            echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
+          fi
+      - name: Prepare the iOS project
+        run: python3 Scripts/prepare.py "$ENGINE"
+      - name: Build and test on the simulator
+        run: bash Scripts/simulator.sh "$IOS_MAJOR"
+      - name: Build unsigned iPhone archive
+        run: bash Scripts/package.sh
+      - name: Build downloads
+        uses: actions/upload-artifact@v4
+        with:
+          name: reniOS-${{ matrix.engine }}-iOS-${{ matrix.os }}
+          path: |
+            out/reniOS-unsigned.ipa
+            out/reniOS-simulator.zip
+            out/keyboard.png
+            out/keyboard-probe.json
+          if-no-files-found: error
+      - name: Simulator diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-diagnostics-${{ matrix.engine }}-${{ matrix.os }}
+          path: out/diagnostics/
+          if-no-files-found: ignore
