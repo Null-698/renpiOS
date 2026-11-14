@@ -2,14 +2,7 @@
 set -euo pipefail
 
 major=${1:?pass the iOS major version}
-project=.build/project/renios/prototype/prototype.xcodeproj
-[[ -d "$project" ]]
 mkdir -p out/diagnostics
-
-xcodebuild -project "$project" -scheme prototype -configuration Debug \
-  -destination 'generic/platform=iOS Simulator' -derivedDataPath "$PWD/.build/simulator" \
-  CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES build \
-  | tee out/diagnostics/simulator-build.log
 
 app="$PWD/.build/simulator/Build/Products/Debug-iphonesimulator/reniOS.app"
 test -d "$app"
@@ -28,29 +21,38 @@ if [[ -z "$udid" ]]; then
   exit 1
 fi
 echo "Testing $bundle on $runtime ($udid)"
+bounded() {
+  python3 -c 'import subprocess,sys; subprocess.run(sys.argv[2:], timeout=float(sys.argv[1]), check=True)' "$@"
+}
 capture() {
-  xcrun simctl io "$udid" screenshot out/diagnostics/last-screen.png >/dev/null 2>&1 || true
-  xcrun simctl spawn "$udid" log show --last 4m --predicate 'process == "reniOS"' \
+  bounded 10 xcrun simctl io "$udid" screenshot out/diagnostics/last-screen.png >/dev/null 2>&1 || true
+  bounded 12 xcrun simctl spawn "$udid" log show --last 4m --predicate 'process == "reniOS"' \
     > out/diagnostics/reniOS.log 2>&1 || true
-  xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true
+  if [[ -n "${data:-}" && -d "$data/Documents" ]]; then
+    find "$data/Documents" \( -name log.txt -o -name traceback.txt \) -exec cp {} out/diagnostics/ \; || true
+  fi
+  bounded 8 xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true
 }
 trap capture EXIT
-xcrun simctl boot "$udid"
-xcrun simctl bootstatus "$udid" -b
+bounded 35 xcrun simctl boot "$udid"
+bounded 120 xcrun simctl bootstatus "$udid" -b
 xcrun simctl spawn "$udid" defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool NO || true
-xcrun simctl install "$udid" "$app"
-xcrun simctl launch "$udid" "$bundle"
+bounded 35 xcrun simctl install "$udid" "$app"
+bounded 35 xcrun simctl launch "$udid" "$bundle"
 sleep 3
 xcrun simctl io "$udid" screenshot out/diagnostics/library.png
 xcrun simctl terminate "$udid" "$bundle"
-xcrun simctl launch "$udid" "$bundle" --keyboard-probe
+bounded 35 xcrun simctl launch "$udid" "$bundle" --keyboard-probe
 data=$(xcrun simctl get_app_container "$udid" "$bundle" data)
 probe="$data/Library/Caches/renios-keyboard.json"
 for ((attempt=0; attempt<45; attempt++)); do
   [[ ! -s "$probe" ]] || break
   sleep 1
 done
-test -s "$probe"
+if [[ ! -s "$probe" ]]; then
+  echo "Ren’Py did not report an on-screen keyboard within 45 seconds." >&2
+  exit 1
+fi
 cp "$probe" out/keyboard-probe.json
 jq -e '.keyboardVisible == true and .viewportStable == true' out/keyboard-probe.json
 xcrun simctl io "$udid" screenshot out/keyboard.png

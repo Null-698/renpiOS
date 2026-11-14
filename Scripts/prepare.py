@@ -166,7 +166,7 @@ def prepare(version, cache):
             if not path.parts or path.parts[0] != prefix:
                 return False
             relative = path.parts[1:]
-            return relative[:1] == ("renpy",) or relative[:2] == ("lib", "python3.12") or relative == ("renpy.py",)
+            return relative[:1] == ("renpy",) or relative[:2] == ("lib", "python3.12") or relative in (("renpy.py",), ("LICENSE.txt",))
 
         archive.extractall(build, members=(entry for entry in archive if needed(entry)), filter="data")
 
@@ -176,6 +176,7 @@ def prepare(version, cache):
     shutil.move(sdk / "renpy", base / "renpy")
     shutil.move(sdk / "lib" / "python3.12", base / "lib" / "python3.12")
     shutil.move(sdk / "renpy.py", base / "renpy_entry.py")
+    shutil.copyfile(sdk / "LICENSE.txt", base / "RenPy-LICENSE.txt")
     shutil.copyfile(ROOT / "Scripts" / "engine_main.py", base / "main.py")
     shutil.copytree(ROOT / "Demo", base / "Demo")
     for source in (ROOT / "App").iterdir():
