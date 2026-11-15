@@ -87,16 +87,18 @@ probe_playback() {
     [[ ! -s "$probe" ]] || break
     sleep 1
   done
-  if [[ ! -s "$probe" ]]; then
+  local check_status=0
+  if [[ -s "$probe" ]]; then
+    cp "$probe" "out/keyboard-probe${suffix}.json" || return
+    cat "out/keyboard-probe${suffix}.json"
+    jq -e '.keyboardVisible == true and .viewportStable == true' "out/keyboard-probe${suffix}.json" || check_status=1
+  else
     echo "Ren’Py did not report an on-screen keyboard within 75 seconds." >&2
-    exit 1
+    check_status=1
   fi
   cp "$data/Library/Caches/renios-library.json" "out/library-probe${suffix}.json" || return
   cat "out/library-probe${suffix}.json"
-  jq -e '.importsAndSaves == true' "out/library-probe${suffix}.json" || return
-  cp "$probe" "out/keyboard-probe${suffix}.json" || return
-  cat "out/keyboard-probe${suffix}.json"
-  jq -e '.keyboardVisible == true and .viewportStable == true' "out/keyboard-probe${suffix}.json" || return
+  jq -e '.importsAndSaves == true' "out/library-probe${suffix}.json" || check_status=1
   if [[ -z "$suffix" ]] && ! bounded 12 xcrun simctl io "$udid" screenshot out/keyboard.png; then
     echo "::warning::Keyboard screenshot unavailable"
   fi
@@ -111,11 +113,12 @@ probe_playback() {
   done
   if [[ ! -s "$quit" ]]; then
     echo "Ren’Py did not return from the Close action within 75 seconds." >&2
-    exit 1
+    return 1
   fi
   cp "$quit" "out/quit-probe${suffix}.json" || return
   cat "out/quit-probe${suffix}.json"
-  jq -e --arg engine "$engine" '.confirmed == true and .exitStatus == 0 and .engine == $engine' "out/quit-probe${suffix}.json"
+  jq -e --arg engine "$engine" '.confirmed == true and .exitStatus == 0 and .engine == $engine and .usesGameSaves == true' "out/quit-probe${suffix}.json" || check_status=1
+  return "$check_status"
 }
 
 failed=()

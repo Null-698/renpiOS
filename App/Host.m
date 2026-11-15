@@ -45,13 +45,16 @@ static IMP originalKeyboardUpdate;
 static CGRect viewportAtInput;
 static __weak UIView *probedViewport;
 
-static void keepGameViewportInPlace(UIViewController *controller, SEL selector) {
-    // SDL's UIKit implementation uses this callback solely to reposition
-    // the render view around text input. Keep its original coordinate space.
-    if (probeEnabled && !probedViewport && controller.view.window) {
-        probedViewport = controller.view;
-        viewportAtInput = [controller.view convertRect:controller.view.bounds toView:nil];
+static void rememberViewport(UIView *viewport) {
+    if (!probedViewport && viewport.window) {
+        probedViewport = viewport;
+        viewportAtInput = [viewport convertRect:viewport.bounds toView:nil];
     }
+}
+
+static void keepGameViewportInPlace(UIViewController *controller, SEL selector) {
+    // SDL uses this callback to reposition the render view around text input.
+    if (probeEnabled) { rememberViewport(controller.view); }
 }
 
 static NSURL *probeFile(NSString *name) {
@@ -150,15 +153,41 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
 
     probeEnabled = keyboardProbe != 0;
     originalKeyboardUpdate = method_setImplementation(keyboardMethod, (IMP)keepGameViewportInPlace);
-    id observer = nil;
+    id willShow = nil;
+    id didShow = nil;
+    __block NSTimer *keyboardProbeTimer = nil;
     NSTimer *quitProbe = nil;
     if (probeEnabled) {
-        observer = [NSNotificationCenter.defaultCenter addObserverForName:UIKeyboardDidShowNotification
-                        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
-            // Let UIKit deliver the rest of its layout callbacks first.
-            dispatch_async(dispatch_get_main_queue(), ^{ writeKeyboardProbe(); });
+        NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+        willShow = [center addObserverForName:UIKeyboardWillShowNotification
+                     object:nil queue:nil usingBlock:^(NSNotification *note) {
+            UIWindowScene *scene = currentScene();
+            for (UIWindow *window in scene.windows) {
+                if ([window.rootViewController isKindOfClass:controller]) {
+                    rememberViewport(window.rootViewController.view);
+                    break;
+                }
+            }
+            NSTimeInterval animation = [note.userInfo[UIKeyboardAnimationDurationUserInfoKey] doubleValue];
+            [keyboardProbeTimer invalidate];
+            // SDL2 pumps UIKit through a nested run loop, so schedule the
+            // measurement there after UIKit's keyboard transition.
+            keyboardProbeTimer = [NSTimer scheduledTimerWithTimeInterval:MAX(0.1, animation + 0.15)
+                                                           repeats:NO block:^(NSTimer *timer) {
+                writeKeyboardProbe();
+            }];
+        }];
+        didShow = [center addObserverForName:UIKeyboardDidShowNotification
+                    object:nil queue:nil usingBlock:^(NSNotification *note) {
+            [keyboardProbeTimer invalidate];
+            keyboardProbeTimer = [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:NO
+                                                                   block:^(NSTimer *timer) {
+                writeKeyboardProbe();
+            }];
         }];
         setenv("RENIOS_KEYBOARD_PROBE", "1", 1);
+        setenv("RENIOS_PROBE_SAVES", saves, 1);
+        unsetenv("RENIOS_PROBE_SAVES_MATCH");
         unsetenv("RENIOS_QUIT_CONFIRMED");
         unsetenv("RENIOS_PROBE_ENGINE");
         NSURL *request = probeFile(@"renios-quit.request");
@@ -189,17 +218,23 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
     if (orientation[0]) { unsetenv(hint); }
 
     [quitProbe invalidate];
+    [keyboardProbeTimer invalidate];
     if (probeEnabled) {
         const char *confirmed = getenv("RENIOS_QUIT_CONFIRMED");
         BOOL confirmationRan = confirmed && strcmp(confirmed, "1") == 0;
         const char *reported = getenv("RENIOS_PROBE_ENGINE");
+        const char *saveMatch = getenv("RENIOS_PROBE_SAVES_MATCH");
+        BOOL savesMatch = saveMatch && strcmp(saveMatch, "1") == 0;
         writeProbe(@{@"confirmed": confirmationRan ? @YES : @NO, @"exitStatus": @(status),
-                     @"engine": reported ? @(reported) : @""}, @"renios-quit.json");
+                     @"engine": reported ? @(reported) : @"", @"usesGameSaves": @(savesMatch)}, @"renios-quit.json");
         unsetenv("RENIOS_QUIT_CONFIRMED");
         unsetenv("RENIOS_PROBE_ENGINE");
         unsetenv("RENIOS_KEYBOARD_PROBE");
+        unsetenv("RENIOS_PROBE_SAVES");
+        unsetenv("RENIOS_PROBE_SAVES_MATCH");
     }
-    if (observer) { [NSNotificationCenter.defaultCenter removeObserver:observer]; }
+    if (willShow) { [NSNotificationCenter.defaultCenter removeObserver:willShow]; }
+    if (didShow) { [NSNotificationCenter.defaultCenter removeObserver:didShow]; }
     method_setImplementation(keyboardMethod, originalKeyboardUpdate);
     probedViewport = nil;
     probeEnabled = NO;
