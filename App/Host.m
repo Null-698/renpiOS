@@ -95,6 +95,7 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
     NSString *controllerName = @"SDL_uikitviewcontroller";
 
     if (prefix) {
+        NSLog(@"Loading Ren’Py %@ in %@", version, prefix);
         NSString *name = [@"RenPy" stringByAppendingString:[version stringByReplacingOccurrencesOfString:@"." withString:@"_"]];
         NSString *relative = [NSString stringWithFormat:@"%@.framework/%@", name, name];
         NSString *framework = [bundle.privateFrameworksPath stringByAppendingPathComponent:relative];
@@ -107,7 +108,10 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
         push = (EnginePushEvent)dlsym(handle, "SDL_PushEvent");
         legacyEventPump = (LegacyEventPump)dlsym(handle, "SDL_iPhoneSetEventPump");
         void (*mainReady)(void) = dlsym(handle, "SDL_SetMainReady");
-        if (!entry || !push || !legacyEventPump || !mainReady) { return -3; }
+        if (!entry || !push || !legacyEventPump || !mainReady) {
+            NSLog(@"Ren’Py %@ is missing a runtime entry point", version);
+            return -3;
+        }
 
         executable = [bundle.bundlePath stringByAppendingPathComponent:
                       [NSString stringWithFormat:@"base/Engines/%@/main", version]];
@@ -116,7 +120,10 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
         Class windowClass = NSClassFromString([prefix stringByAppendingString:@"_uikitwindow"]);
         SEL selector = @selector(initWithFrame:);
         Method initializer = windowClass ? class_getInstanceMethod(windowClass, selector) : NULL;
-        if (!initializer || !legacyScene) { return -3; }
+        if (!initializer || !legacyScene) {
+            NSLog(@"Ren’Py %@ could not attach its SDL window to a scene", version);
+            return -3;
+        }
         IMP implementation = method_getImplementation(initializer);
         if (implementation != (IMP)attachLegacyWindow) {
             legacyWindowInit = (void *)implementation;
@@ -133,6 +140,7 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
     Class controller = NSClassFromString(controllerName);
     keyboardMethod = controller ? class_getInstanceMethod(controller, sel_registerName("updateKeyboard")) : NULL;
     if (!keyboardMethod) {
+        NSLog(@"Ren’Py %@ has no SDL keyboard hook for %@", version, controllerName);
         if (legacyEventPump) { legacyEventPump(0); }
         if (windowInitializer) { method_setImplementation(windowInitializer, previousWindowInitializer); }
         legacyScene = nil;
@@ -171,7 +179,9 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
     };
     const char *hint = (RENIOS_SDL3 && !prefix) ? "SDL_ORIENTATIONS" : "SDL_IOS_ORIENTATIONS";
     if (orientation[0]) { setenv(hint, orientation, 1); }
+    if (prefix) { NSLog(@"Starting Ren’Py %@", version); }
     int status = entry(4, argv);
+    if (prefix) { NSLog(@"Ren’Py %@ returned %d", version, status); }
     activePushEvent = NULL;
     if (legacyEventPump) { legacyEventPump(0); }
     if (windowInitializer) { method_setImplementation(windowInitializer, previousWindowInitializer); }

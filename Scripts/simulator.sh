@@ -28,6 +28,11 @@ capture() {
   bounded 10 xcrun simctl io "$udid" screenshot out/diagnostics/last-screen.png >/dev/null 2>&1 || true
   bounded 12 xcrun simctl spawn "$udid" log show --last 4m --predicate 'process == "reniOS"' \
     > out/diagnostics/reniOS.log 2>&1 || true
+  local log_root
+  log_root=$(dirname "$device_data")/data/Library/Logs/CrashReporter
+  if [[ -d "$log_root" ]]; then
+    find "$log_root" -name 'reniOS*.ips' -exec cp {} out/diagnostics/ \; || true
+  fi
   if [[ -n "${data:-}" && -d "$data/Documents" ]]; then
     find "$data/Documents" \( -name log.txt -o -name traceback.txt \) -exec cp {} out/diagnostics/ \; || true
   fi
@@ -74,7 +79,9 @@ probe_playback() {
   local suffix=$2
   bounded 25 xcrun simctl terminate "$udid" "$bundle" >/dev/null 2>&1 || true
   rm -f "$data"/Library/Caches/renios-{library.json,keyboard.json,quit.json,quit.request}
-  bounded 150 xcrun simctl launch "$udid" "$bundle" --keyboard-probe "$engine"
+  echo "Testing Ren’Py $engine"
+  bounded 90 xcrun simctl launch --stdout="$PWD/out/diagnostics/$engine-stdout.log" \
+    --stderr="$PWD/out/diagnostics/$engine-stderr.log" "$udid" "$bundle" --keyboard-probe "$engine" || return
   probe="$data/Library/Caches/renios-keyboard.json"
   for ((attempt=0; attempt<75; attempt++)); do
     [[ ! -s "$probe" ]] || break
@@ -84,19 +91,19 @@ probe_playback() {
     echo "Ren’Py did not report an on-screen keyboard within 75 seconds." >&2
     exit 1
   fi
-  cp "$data/Library/Caches/renios-library.json" "out/library-probe${suffix}.json"
+  cp "$data/Library/Caches/renios-library.json" "out/library-probe${suffix}.json" || return
   cat "out/library-probe${suffix}.json"
-  jq -e '.importsAndSaves == true' "out/library-probe${suffix}.json"
-  cp "$probe" "out/keyboard-probe${suffix}.json"
+  jq -e '.importsAndSaves == true' "out/library-probe${suffix}.json" || return
+  cp "$probe" "out/keyboard-probe${suffix}.json" || return
   cat "out/keyboard-probe${suffix}.json"
-  jq -e '.keyboardVisible == true and .viewportStable == true' "out/keyboard-probe${suffix}.json"
+  jq -e '.keyboardVisible == true and .viewportStable == true' "out/keyboard-probe${suffix}.json" || return
   if [[ -z "$suffix" ]] && ! bounded 12 xcrun simctl io "$udid" screenshot out/keyboard.png; then
     echo "::warning::Keyboard screenshot unavailable"
   fi
 
   # Ask the running host to invoke the Close button’s native action, then
   # require the demo's confirmation screen and a clean return from Ren'Py.
-  touch "$data/Library/Caches/renios-quit.request"
+  touch "$data/Library/Caches/renios-quit.request" || return
   quit="$data/Library/Caches/renios-quit.json"
   for ((attempt=0; attempt<75; attempt++)); do
     [[ ! -s "$quit" ]] || break
@@ -106,22 +113,33 @@ probe_playback() {
     echo "Ren’Py did not return from the Close action within 75 seconds." >&2
     exit 1
   fi
-  cp "$quit" "out/quit-probe${suffix}.json"
+  cp "$quit" "out/quit-probe${suffix}.json" || return
   cat "out/quit-probe${suffix}.json"
   jq -e --arg engine "$engine" '.confirmed == true and .exitStatus == 0 and .engine == $engine' "out/quit-probe${suffix}.json"
 }
 
-probe_playback 8.6.0 ""
+failed=()
 while IFS= read -r engine; do
-  probe_playback "$engine" "-$engine"
+  suffix="-$engine"
+  [[ "$engine" != "8.6.0" ]] || suffix=""
+  if ! probe_playback "$engine" "$suffix"; then
+    failed+=("$engine")
+    tail -60 "out/diagnostics/$engine-stderr.log" || true
+  fi
 done < <(python3 - "$app/Info.plist" <<'PYTHON'
 import plistlib
 import sys
 
 with open(sys.argv[1], "rb") as stream:
     info = plistlib.load(stream)
-for version in info["ReniosInstalledEngines"]:
-    if version != info["ReniosEngineVersion"]:
-        print(version)
+default = info["ReniosEngineVersion"]
+available = info["ReniosInstalledEngines"]
+priority = [v for v in (default, "8.5.3", "8.3.7", "7.8.7") if v in available]
+for version in priority + [v for v in available if v not in priority]:
+    print(version)
 PYTHON
 )
+if ((${#failed[@]})); then
+  echo "Failed engine checks: ${failed[*]}" >&2
+  exit 1
+fi
