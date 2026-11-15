@@ -106,7 +106,7 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
         }
         entry = (EngineMain)dlsym(handle, "launcher_main");
         push = (EnginePushEvent)dlsym(handle, "SDL_PushEvent");
-        legacyEventPump = (LegacyEventPump)dlsym(handle, "SDL_iPhoneSetEventPump");
+        legacyEventPump = (LegacyEventPump)dlsym(handle, "renios_legacy_set_event_pump");
         void (*mainReady)(void) = dlsym(handle, "SDL_SetMainReady");
         if (!entry || !push || !legacyEventPump || !mainReady) {
             NSLog(@"Ren’Py %@ is missing a runtime entry point", version);

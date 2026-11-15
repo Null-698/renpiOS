@@ -9,7 +9,7 @@ SDK_SETTINGS = {
     "iphoneos": ("arm64-apple-ios26.0", "release"),
     "iphonesimulator": ("arm64-apple-ios26.0-simulator", "debug"),
 }
-ENTRY_POINTS = ("launcher_main", "SDL_SetMainReady", "SDL_PushEvent", "SDL_iPhoneSetEventPump")
+ENTRY_POINTS = ("launcher_main", "SDL_SetMainReady", "SDL_PushEvent", "renios_legacy_set_event_pump")
 
 
 def isolate_sdl(source, output, namespace):
@@ -72,7 +72,8 @@ def embed(version, namespace, app, sdk):
         systems.add("MetalANGLE")
     for system in sorted(systems):
         command.extend(["-framework", system])
-    subprocess.run([*command, *ldflags, "-o", str(framework / name)], check=True)
+    shim = Path(__file__).with_name("legacy-sdl.c")
+    subprocess.run([*command, str(shim), *ldflags, "-o", str(framework / name)], check=True)
     (framework / "Info.plist").write_bytes(plistlib.dumps({
         "CFBundleName": name,
         "CFBundleExecutable": name,
