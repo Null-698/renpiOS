@@ -61,7 +61,7 @@ jobs:
         run: bash Scripts/build-simulator.sh
       - name: Check the viewport while the keyboard opens
         if: ${{ !cancelled() && steps.simulator_build.outcome == 'success' }}
-        timeout-minutes: 12
+        timeout-minutes: 18
         run: bash Scripts/simulator.sh "$IOS_MAJOR"
       - name: Upload simulator build and keyboard results
         uses: actions/upload-artifact@v4

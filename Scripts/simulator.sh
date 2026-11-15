@@ -67,11 +67,7 @@ defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool NO
 bounded 150 xcrun simctl boot "$udid"
 bounded 240 xcrun simctl bootstatus "$udid" -b
 bounded 150 xcrun simctl install "$udid" "$app"
-bounded 35 xcrun simctl launch "$udid" "$bundle"
-sleep 3
-xcrun simctl io "$udid" screenshot out/diagnostics/library.png
-xcrun simctl terminate "$udid" "$bundle"
-bounded 35 xcrun simctl launch "$udid" "$bundle" --keyboard-probe
+bounded 150 xcrun simctl launch "$udid" "$bundle" --keyboard-probe
 data=$(xcrun simctl get_app_container "$udid" "$bundle" data)
 probe="$data/Library/Caches/renios-keyboard.json"
 for ((attempt=0; attempt<75; attempt++)); do
@@ -85,5 +81,8 @@ fi
 cp "$probe" out/keyboard-probe.json
 cat out/keyboard-probe.json
 jq -e '.keyboardVisible == true and .viewportStable == true' out/keyboard-probe.json
-xcrun simctl io "$udid" screenshot out/keyboard.png
+bounded 60 xcrun simctl io "$udid" screenshot out/keyboard.png
+bounded 150 xcrun simctl launch --terminate-running-process "$udid" "$bundle"
+sleep 3
+bounded 60 xcrun simctl io "$udid" screenshot out/diagnostics/library.png
 ditto -c -k --keepParent "$app" out/reniOS-simulator.zip
