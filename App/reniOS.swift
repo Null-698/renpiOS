@@ -15,7 +15,6 @@ final class Session {
     var novels = LibraryStore.list()
     var isImporting = false
     var message: String?
-    var hasPlayed = false
     private var pending: Novel?
 
     static var engine: String {
@@ -36,22 +35,30 @@ final class Session {
     }
 
     func run() {
-        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--keyboard-probe") {
-            let probeEngine = ProcessInfo.processInfo.arguments.dropFirst(index + 1).first
+        var testGames: [Novel] = []
+        #if DEBUG
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--playback-probe") {
+            let engines = ProcessInfo.processInfo.arguments.dropFirst(index + 1)
             do {
-                #if DEBUG
                 let result = ["importsAndSaves": try LibraryStore.checkImportsAndSaves()]
                 let output = URL.cachesDirectory.appending(path: "renios-library.json")
                 try JSONEncoder().encode(result).write(to: output, options: .atomic)
-                #endif
-                var demo = try LibraryStore.installDemo()
-                demo.engineOverride = probeEngine
-                try play(demo, probe: true)
+                guard let base = Bundle.main.url(forResource: "base", withExtension: nil) else {
+                    throw ImportFailure.missingDemo
+                }
+                let sample = base.appending(path: "Demo")
+                for (number, version) in engines.enumerated() {
+                    var game = try LibraryStore.install(sample, title: "Playback Probe \(number + 1)")
+                    game.engineOverride = version
+                    testGames.append(game)
+                }
+                novels = LibraryStore.list()
             } catch {
-                NSLog("Renios probe: %@", error.localizedDescription)
+                NSLog("reniOS playback probe: %@", error.localizedDescription)
+                return
             }
-            return
         }
+        #endif
 
         var previewTab: GameTab?
         var previewLandscape = false
@@ -86,20 +93,27 @@ final class Session {
 
         // SDL owns UIApplication. Let UIKit service its normal run loop while
         // its main-function callback waits for the library to select a game.
+        let probing = !testGames.isEmpty
+        var nextTest = testGames.makeIterator()
         while true {
-            guard let game = pending else {
+            guard let game = pending ?? nextTest.next() else {
                 _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
                 continue
             }
             pending = nil
             window.isHidden = true
             do {
-                try play(game)
+                let status = try play(game, probe: probing)
+                if probing && status != 0 { return }
             } catch {
                 message = error.localizedDescription
+                if probing { return }
             }
             novels = LibraryStore.list()
             window.makeKeyAndVisible()
+            if probing {
+                _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
+            }
         }
     }
 
@@ -163,10 +177,10 @@ final class Session {
         }
     }
 
-    private func play(_ novel: Novel, probe: Bool = false) throws {
+    private func play(_ novel: Novel, probe: Bool) throws -> Int32 {
         guard let version = Self.engine(for: novel) else {
             message = "This game needs a different Ren’Py engine."
-            return
+            return -1
         }
         try FileManager.default.createDirectory(at: novel.saves, withIntermediateDirectories: true)
         try LibraryStore.recordPlay(novel)
@@ -181,8 +195,8 @@ final class Session {
                 }
             }
         }
-        hasPlayed = true
         if result != 0 { message = "Ren’Py closed with code \(result)." }
+        return result
     }
 
     private func makeWindow() -> UIWindow {
@@ -533,7 +547,7 @@ private struct LibraryScreen: View {
                         session.launch(game)
                     }
                     .buttonStyle(.glassProminent)
-                    .disabled(session.hasPlayed || session.isImporting || Session.engine(for: game) == nil)
+                    .disabled(session.isImporting || Session.engine(for: game) == nil)
                     Button("Details", systemImage: "info.circle") { showDetails(game) }
                         .buttonStyle(.glass)
                 }
@@ -912,7 +926,7 @@ private struct NovelSheet: View {
     }
 
     private var canPlay: Bool {
-        !session.hasPlayed && !session.isImporting && Session.engine(for: novel) != nil
+        !session.isImporting && Session.engine(for: novel) != nil
     }
 
     private var automaticEngine: String {
@@ -946,10 +960,6 @@ private struct NovelSheet: View {
             .padding(.horizontal, 12)
             .background(panel, in: .rect(cornerRadius: 14))
             .disabled(session.isImporting)
-            if session.hasPlayed {
-                Label("Reopen reniOS to play again.", systemImage: "arrow.clockwise")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
         }
     }
 

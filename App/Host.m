@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-extern int launcher_main(int argc, char **argv);
+extern int renios_engine_play(const char *, const char *, const char *, int);
 extern void renios_library(void);
 extern int SDL_PushEvent(void *event);
 #if RENIOS_SDL3
@@ -21,7 +21,7 @@ extern void SDL_StartTextInput(void);
 extern int SDL_UIKitRunApp(int, char **, int (*)(int, char **));
 #endif
 
-typedef int (*EngineMain)(int, char **);
+typedef int (*EngineMain)(const char *, const char *, const char *, int);
 typedef int (*EnginePushEvent)(void *);
 typedef void (*LegacyEventPump)(int);
 
@@ -55,23 +55,12 @@ static UIWindowScene *currentScene(void) {
     return nil;
 }
 
-static BOOL probeEnabled;
 static IMP originalLayout;
 static IMP originalTransition;
 static IMP originalShouldBeginEditing;
 static __weak UIViewController *gameController;
 static CGSize lastViewportSize;
 static BOOL keyboardDismissedByPlayer;
-static CGRect viewportAtInput;
-static __weak UIView *probedViewport;
-
-static void rememberViewport(UIView *viewport) {
-    if (!probedViewport && viewport.window) {
-        probedViewport = viewport;
-        viewportAtInput = [viewport convertRect:viewport.bounds toView:nil];
-    }
-}
-
 static void fitGameViewport(UIViewController *controller) {
     UIView *view = controller.viewIfLoaded;
     UIWindow *window = view.window;
@@ -160,7 +149,6 @@ static void transitionGameViewport(UIViewController *controller, SEL selector, C
 }
 
 static void updateGameKeyboardLayout(UIViewController *controller, SEL selector) {
-    if (probeEnabled) { rememberViewport(controller.view); }
     // SDL normally adds an offset for the keyboard. Keep the render view in
     // the window's current coordinate space, including after a rotation.
     fitGameViewport(controller);
@@ -205,22 +193,6 @@ static void writeProbe(NSDictionary *result, NSString *name) {
     [data writeToURL:probeFile(name) options:NSDataWritingAtomic error:NULL];
 }
 
-static void writeKeyboardProbe(void) {
-    UIView *viewport = probedViewport;
-    if (!viewport.window) { return; }
-
-    CGRect current = [viewport convertRect:viewport.bounds toView:nil];
-    BOOL viewportStable = CGRectEqualToRect(viewportAtInput, current) &&
-                          current.size.width > 0 && current.size.height > 0;
-    NSDictionary *result = @{
-        @"keyboardVisible": @YES,
-        @"viewportStable": viewportStable ? @YES : @NO,
-        @"before": NSStringFromCGRect(viewportAtInput),
-        @"after": NSStringFromCGRect(current)
-    };
-    writeProbe(result, @"renios-keyboard.json");
-}
-
 static BOOL viewportFillsWindow(UIView *view) {
     UIWindow *window = view.window;
     if (!window || CGRectIsEmpty(window.bounds)) { return NO; }
@@ -238,17 +210,9 @@ static BOOL startPlaybackControlsProbe(void) {
         return NO;
     }
 
-    UITextField *field = gameTextField();
-    const BOOL keyboardWasFocused = field.isFirstResponder;
-    if (keyboardWasFocused) {
-        renios_toggle_keyboard();
-        // Exercise a focus request while Ren’Py still has a live input prompt.
-        [field becomeFirstResponder];
-    }
     const BOOL startedInPortrait = window.bounds.size.height > window.bounds.size.width;
     [NSTimer scheduledTimerWithTimeInterval:0.8 repeats:NO block:^(NSTimer *timer) {
         if (!activePushEvent) { return; }
-        const BOOL stayedHidden = keyboardWasFocused && !gameTextField().isFirstResponder;
         UIInterfaceOrientationMask target = startedInPortrait
             ? UIInterfaceOrientationMaskLandscapeRight : UIInterfaceOrientationMaskPortrait;
         UIWindowSceneGeometryPreferencesIOS *preferences =
@@ -271,34 +235,26 @@ static BOOL startPlaybackControlsProbe(void) {
             if (++attempts < 32 && (!rotated || !fillsWindow || !drawableMatches)) { return; }
             [rotationTimer invalidate];
 
-            BOOL hiddenThroughRotation = stayedHidden && !gameTextField().isFirstResponder;
-            if (keyboardWasFocused) { renios_toggle_keyboard(); }
-            [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:NO block:^(NSTimer *reopened) {
-                UIView *current = gameController.viewIfLoaded;
-                CGSize actual = CGSizeZero;
-                BOOL measured = readDrawableSize(current, &actual);
-                writeProbe(@{
-                    @"drawableMatchesViewport": @(drawableMatches && measured && drawableSizeMatches(current, actual)),
-                    @"drawableSize": NSStringFromCGSize(actual),
-                    @"expectedDrawableSize": NSStringFromCGSize(expectedDrawableSize(current)),
-                    @"keyboardStayedHidden": @(hiddenThroughRotation),
-                    @"keyboardReopened": @(keyboardWasFocused && gameTextField().isFirstResponder),
-                    @"rotated": @(rotated),
-                    @"viewportFillsWindow": @(fillsWindow && viewportFillsWindow(gameController.viewIfLoaded))
-                }, @"renios-controls.json");
-            }];
+            writeProbe(@{
+                @"drawableMatchesViewport": @(drawableMatches),
+                @"drawableSize": NSStringFromCGSize(initialDrawable),
+                @"expectedDrawableSize": NSStringFromCGSize(expectedDrawableSize(view)),
+                @"rotated": @(rotated),
+                @"viewportFillsWindow": @(fillsWindow)
+            }, @"renios-controls.json");
         }];
     }];
     return YES;
 }
 
-int renios_play(const char *project, const char *saves, const char *engine, const char *orientation, int keyboardProbe) {
+int renios_play(const char *project, const char *saves, const char *engine, const char *orientation, int playbackProbe) {
     NSString *version = @(engine);
     NSBundle *bundle = NSBundle.mainBundle;
     NSDictionary *namespaces = [bundle objectForInfoDictionaryKey:@"ReniosLegacyNamespaces"];
     NSString *prefix = namespaces[version];
-    NSString *executable = bundle.executablePath;
-    EngineMain entry = launcher_main;
+    NSString *base = [bundle pathForResource:@"base" ofType:nil];
+    if (!base) { return -3; }
+    EngineMain entry = renios_engine_play;
     EnginePushEvent push = SDL_PushEvent;
     LegacyEventPump legacyEventPump = NULL;
     void (*startKeyboard)(void) = startDefaultKeyboard;
@@ -311,12 +267,19 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
         NSString *name = [@"RenPy" stringByAppendingString:[version stringByReplacingOccurrencesOfString:@"." withString:@"_"]];
         NSString *relative = [NSString stringWithFormat:@"%@.framework/%@", name, name];
         NSString *framework = [bundle.privateFrameworksPath stringByAppendingPathComponent:relative];
-        void *handle = dlopen(framework.fileSystemRepresentation, RTLD_NOW | RTLD_LOCAL | RTLD_FIRST);
+        // Keep each framework and its CPython state alive between games.
+        static NSMutableDictionary<NSString *, NSValue *> *loadedEngines;
+        if (!loadedEngines) { loadedEngines = [NSMutableDictionary new]; }
+        void *handle = loadedEngines[version].pointerValue;
+        if (!handle) {
+            handle = dlopen(framework.fileSystemRepresentation, RTLD_NOW | RTLD_LOCAL | RTLD_FIRST);
+            if (handle) { loadedEngines[version] = [NSValue valueWithPointer:handle]; }
+        }
         if (!handle) {
             NSLog(@"Ren’Py %@ could not load: %s", version, dlerror());
             return -3;
         }
-        entry = (EngineMain)dlsym(handle, "launcher_main");
+        entry = (EngineMain)dlsym(handle, "renios_engine_play");
         push = (EnginePushEvent)dlsym(handle, "SDL_PushEvent");
         legacyEventPump = (LegacyEventPump)dlsym(handle, "renios_legacy_set_event_pump");
         startKeyboard = dlsym(handle, "renios_legacy_start_keyboard");
@@ -326,8 +289,7 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
             return -3;
         }
 
-        executable = [bundle.bundlePath stringByAppendingPathComponent:
-                      [NSString stringWithFormat:@"base/Engines/%@/main", version]];
+        base = [base stringByAppendingPathComponent:[NSString stringWithFormat:@"Engines/%@/base", version]];
         legacyScene = currentScene();
         controllerName = [prefix stringByAppendingString:@"_uikitviewcontroller"];
         Class windowClass = NSClassFromString([prefix stringByAppendingString:@"_uikitwindow"]);
@@ -338,7 +300,9 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
             return -3;
         }
         IMP implementation = method_getImplementation(initializer);
-        if (implementation != (IMP)attachLegacyWindow) {
+        if (implementation == (IMP)attachLegacyWindow) {
+            legacyWindowInit = (void *)class_getMethodImplementation(class_getSuperclass(windowClass), selector);
+        } else {
             legacyWindowInit = (void *)implementation;
             // Own this method on the private SDL subclass. Never edit UIWindow.
             if (!class_addMethod(windowClass, selector, (IMP)attachLegacyWindow, method_getTypeEncoding(initializer))) {
@@ -364,7 +328,6 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
     activeStartKeyboard = startKeyboard;
     keyboardDismissedByPlayer = NO;
 
-    probeEnabled = keyboardProbe != 0;
     IMP originalKeyboardUpdate = installViewportHook(controller, updateKeyboardSelector, (IMP)updateGameKeyboardLayout);
     SEL layoutSelector = @selector(viewDidLayoutSubviews);
     originalLayout = installViewportHook(controller, layoutSelector, (IMP)layoutGameViewport);
@@ -372,55 +335,25 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
     originalTransition = installViewportHook(controller, transitionSelector, (IMP)transitionGameViewport);
     SEL editingSelector = @selector(textFieldShouldBeginEditing:);
     originalShouldBeginEditing = installViewportHook(controller, editingSelector, (IMP)allowGameKeyboardFocus);
+    if (originalShouldBeginEditing == (IMP)allowGameKeyboardFocus) { originalShouldBeginEditing = NULL; }
     if (!originalShouldBeginEditing) {
         char types[16];
         snprintf(types, sizeof(types), "%s@:@", @encode(BOOL));
         class_addMethod(controller, editingSelector, (IMP)allowGameKeyboardFocus, types);
     }
-    id willShow = nil;
-    id didShow = nil;
-    __block NSTimer *keyboardProbeTimer = nil;
     NSTimer *quitProbe = nil;
-    if (probeEnabled) {
-        NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
-        willShow = [center addObserverForName:UIKeyboardWillShowNotification
-                     object:nil queue:nil usingBlock:^(NSNotification *note) {
-            UIWindowScene *scene = currentScene();
-            for (UIWindow *window in scene.windows) {
-                if ([window.rootViewController isKindOfClass:controller]) {
-                    rememberViewport(window.rootViewController.view);
-                    break;
-                }
-            }
-            NSTimeInterval animation = [note.userInfo[UIKeyboardAnimationDurationUserInfoKey] doubleValue];
-            [keyboardProbeTimer invalidate];
-            // SDL2 pumps UIKit through a nested run loop, so schedule the
-            // measurement there after UIKit's keyboard transition.
-            keyboardProbeTimer = [NSTimer scheduledTimerWithTimeInterval:MAX(0.1, animation + 0.15)
-                                                           repeats:NO block:^(NSTimer *timer) {
-                writeKeyboardProbe();
-            }];
-        }];
-        didShow = [center addObserverForName:UIKeyboardDidShowNotification
-                    object:nil queue:nil usingBlock:^(NSNotification *note) {
-            [keyboardProbeTimer invalidate];
-            keyboardProbeTimer = [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:NO
-                                                                   block:^(NSTimer *timer) {
-                writeKeyboardProbe();
-            }];
-        }];
-        setenv("RENIOS_KEYBOARD_PROBE", "1", 1);
-        setenv("RENIOS_PROBE_SAVES", saves, 1);
+    if (playbackProbe) {
         unsetenv("RENIOS_PROBE_SAVES_MATCH");
         unsetenv("RENIOS_QUIT_CONFIRMED");
         unsetenv("RENIOS_PROBE_ENGINE");
+        unsetenv("RENIOS_PROBE_PROJECT");
         NSURL *request = probeFile(@"renios-quit.request");
         NSURL *controls = probeFile(@"renios-controls.request");
         quitProbe = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
             if ([NSFileManager.defaultManager fileExistsAtPath:controls.path] && startPlaybackControlsProbe()) {
                 [NSFileManager.defaultManager removeItemAtURL:controls error:NULL];
             }
-            if (![NSFileManager.defaultManager fileExistsAtPath:request.path]) { return; }
+            if (!getenv("RENIOS_PROBE_ENGINE") || ![NSFileManager.defaultManager fileExistsAtPath:request.path]) { return; }
 
             [timer invalidate];
             [NSFileManager.defaultManager removeItemAtURL:request error:NULL];
@@ -430,19 +363,15 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
 
     setenv("RENPY_PLATFORM", "ios-arm64", 1);
     setenv("RENPY_DISABLE_FULLSCREEN", "1", 1);
-    char *argv[] = {
-        (char *)executable.fileSystemRepresentation,
-        (char *)project, "--savedir", (char *)saves, NULL
-    };
     const char *hint = (RENIOS_SDL3 && !prefix) ? "SDL_ORIENTATIONS" : "SDL_IOS_ORIENTATIONS";
     const char *requestedOrientation = orientation[0] ? orientation : NULL;
-    if (probeEnabled && (!prefix || [version isEqualToString:@"7.4.11"]) && !requestedOrientation) {
+    if (playbackProbe && (!prefix || [version isEqualToString:@"7.4.11"]) && !requestedOrientation) {
         requestedOrientation = "Portrait LandscapeLeft LandscapeRight";
     }
     if (requestedOrientation) { setenv(hint, requestedOrientation, 1); }
-    if (prefix) { NSLog(@"Starting Ren’Py %@", version); }
-    int status = entry(4, argv);
-    if (prefix) { NSLog(@"Ren’Py %@ returned %d", version, status); }
+    NSLog(@"Starting Ren’Py %@ for %s", version, project);
+    int status = entry(base.fileSystemRepresentation, project, saves, playbackProbe);
+    NSLog(@"Ren’Py %@ returned %d", version, status);
     activePushEvent = NULL;
     activeStartKeyboard = NULL;
     keyboardDismissedByPlayer = NO;
@@ -454,31 +383,30 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
     if (requestedOrientation) { unsetenv(hint); }
 
     [quitProbe invalidate];
-    [keyboardProbeTimer invalidate];
-    if (probeEnabled) {
+    if (playbackProbe) {
         const char *confirmed = getenv("RENIOS_QUIT_CONFIRMED");
         BOOL confirmationRan = confirmed && strcmp(confirmed, "1") == 0;
         const char *reported = getenv("RENIOS_PROBE_ENGINE");
         const char *saveMatch = getenv("RENIOS_PROBE_SAVES_MATCH");
         BOOL savesMatch = saveMatch && strcmp(saveMatch, "1") == 0;
-        writeProbe(@{@"confirmed": confirmationRan ? @YES : @NO, @"exitStatus": @(status),
-                     @"engine": reported ? @(reported) : @"", @"usesGameSaves": @(savesMatch)}, @"renios-quit.json");
+        const char *actualProject = getenv("RENIOS_PROBE_PROJECT");
+        writeProbe(@{@"confirmed": @(confirmationRan), @"exitStatus": @(status),
+                     @"engine": reported ? @(reported) : @"", @"usesGameSaves": @(savesMatch),
+                     @"project": actualProject ? @(actualProject) : @"",
+                     @"pid": @(NSProcessInfo.processInfo.processIdentifier)}, @"renios-quit.json");
         unsetenv("RENIOS_QUIT_CONFIRMED");
         unsetenv("RENIOS_PROBE_ENGINE");
-        unsetenv("RENIOS_KEYBOARD_PROBE");
+        unsetenv("RENIOS_PLAYBACK_PROBE");
+        unsetenv("RENIOS_PROBE_PROJECT");
         unsetenv("RENIOS_PROBE_SAVES");
         unsetenv("RENIOS_PROBE_SAVES_MATCH");
     }
-    if (willShow) { [NSNotificationCenter.defaultCenter removeObserver:willShow]; }
-    if (didShow) { [NSNotificationCenter.defaultCenter removeObserver:didShow]; }
     method_setImplementation(class_getInstanceMethod(controller, updateKeyboardSelector), originalKeyboardUpdate);
     if (originalLayout) { method_setImplementation(class_getInstanceMethod(controller, layoutSelector), originalLayout); }
     if (originalTransition) { method_setImplementation(class_getInstanceMethod(controller, transitionSelector), originalTransition); }
     if (originalShouldBeginEditing) {
         method_setImplementation(class_getInstanceMethod(controller, editingSelector), originalShouldBeginEditing);
     }
-    probedViewport = nil;
-    probeEnabled = NO;
     return status;
 }
 

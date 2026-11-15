@@ -24,5 +24,5 @@ screen confirm(message, yes_action, no_action):
 
     key "game_menu" action no_action
 
-    if os.environ.get("RENIOS_KEYBOARD_PROBE") == "1":
+    if os.environ.get("RENIOS_PLAYBACK_PROBE") == "1":
         timer 0.2 action [Function(observatory_confirm_probe, _update_screens=False), yes_action]

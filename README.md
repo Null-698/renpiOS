@@ -21,11 +21,11 @@ Import a ZIP, a Ren’Py Android APK, or an extracted game folder. Imports use t
 
 The importer checks the packaged Ren’Py version in game folders, ZIPs, and APKs, including version files in Android’s packaged private data. Automatic selection prefers the same major and minor series. When metadata is absent, the player uses its bundled default. Each game can select an installed engine manually. The bundled default is Ren’Py 8.6.0.
 
-Games and per-game saves are exposed in **Files → On My iPhone/iPad → reniOS**. Open a game’s details to export its save folder as a ZIP or restore it to that game. On restore you can keep existing saves or replace matching files. Removing a game preserves saves under that game's ID. Reopen the app before starting a second game so each session gets a fresh embedded interpreter.
+Games and per-game saves are exposed in **Files → On My iPhone/iPad → reniOS**. Open a game’s details to export its save folder as a ZIP or restore it to that game. On restore you can keep existing saves or replace matching files. Removing a game preserves saves under that game's ID. Close a game to return to the library and launch another.
 
 ## Keyboard regression
 
-The session keeps SDL's UIKit render view in its existing coordinate space while SDL handles native text input. The CI probe starts an actual Ren’Py input prompt, waits for the iOS keyboard notification, and checks that the game's viewport frame stays fixed. The probe saves the measured rectangles and attempts to capture a screenshot. It then calls the same native quit action as the Close button, accepts the sample’s confirmation, and checks that Ren’Py returns successfully.
+The host keeps a Python interpreter for each engine it uses and clears the game state when playback ends. The iOS 27 simulator probe closes two distinct games launched with the same engine and switches between the newest and oldest bundled engines in one process. It checks the save directory, Close confirmation, and rotation on the default and 7.4.11 engines.
 
 ## Upstream components
 

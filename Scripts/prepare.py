@@ -127,6 +127,7 @@ def insert_after(text, marker, addition):
 
 def configure_project(project, version):
     config = project.read_text()
+    series = python_series(version)
     config = config.replace("main.c", "Host.m").replace("sourcecode.c.c; path = Host.m", "sourcecode.c.objc; path = Host.m")
     config = re.sub(r"IPHONEOS_DEPLOYMENT_TARGET = [\d.]+;", "IPHONEOS_DEPLOYMENT_TARGET = 26.0;", config)
     config = re.sub(r"\n\s*(?:DEVELOPMENT_TEAM|DevelopmentTeam|SWIFT_VERSION) = [^;]+;", "", config)
@@ -142,7 +143,9 @@ def configure_project(project, version):
     config = config.replace(
         'USER_HEADER_SEARCH_PATHS = "";',
         'USER_HEADER_SEARCH_PATHS = "";\n'
-        f'\t\t\t\tGCC_PREPROCESSOR_DEFINITIONS = ("$(inherited)", "RENIOS_SDL3={int(version == "8.6.0")}");\n'
+        f'\t\t\t\tGCC_PREPROCESSOR_DEFINITIONS = ("$(inherited)", "RENIOS_SDL3={int(version == "8.6.0")}", '
+        f'"RENIOS_PY2={int(series.startswith("2."))}", '
+        f'"RENIOS_PYTHON_SERIES=\\\"{series}\\\"", "RENIOS_PYTHON_DIGITS=\\\"{series.replace(".", "")}\\\"");\n'
         '\t\t\t\tSWIFT_VERSION = 5.0;\n'
         '\t\t\t\tSWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/Host.h";'
     )
@@ -156,11 +159,12 @@ def configure_project(project, version):
     if count != 1:
         raise ValueError("Expected one upstream frameworks phase")
 
-    for index, name in enumerate(("reniOS.swift", "Library.swift", "Engine.swift", "APKTitle.swift", "Management.swift"), 4):
+    for index, name in enumerate(("reniOS.swift", "Library.swift", "Engine.swift", "APKTitle.swift", "Management.swift", "Runtime.c"), 4):
+        file_type = "sourcecode.c.c" if name.endswith(".c") else "sourcecode.swift"
         reference = f"B100000000000000000000{index:02d}"
         build = f"B100000000000000000001{index:02d}"
         config = insert_after(config, "/* Begin PBXFileReference section */",
-                              f'\n\t\t{reference} = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = {name}; sourceTree = "<group>"; }};')
+                              f'\n\t\t{reference} = {{isa = PBXFileReference; lastKnownFileType = {file_type}; path = {name}; sourceTree = "<group>"; }};')
         config = insert_after(config, "/* Begin PBXBuildFile section */",
                               f"\n\t\t{build} = {{isa = PBXBuildFile; fileRef = {reference}; }};")
         config = insert_after(config, "E2845E1E1A350A57004BC3F8 /* Host.m */,", f"\n\t\t\t\t{reference},")
@@ -242,6 +246,42 @@ def patch_legacy_drawable_resize(engine):
         core.with_suffix(suffix).unlink(missing_ok=True)
 
 
+def configure_game_reload(engine):
+    bootstrap = engine / "bootstrap.py"
+    source = bootstrap.read_text(encoding="utf-8")
+    source, count = re.subn(r"^    renpy\.import_all\(\).*?^    renpy\.(?:loader|importer)\.init_importer\(\)$",
+                            lambda match: "    import renios_runtime\n    if not renios_runtime.initialized:\n"
+                            + "".join("    " + line if line.strip() else line
+                                      for line in match[0].splitlines(keepends=True))
+                            + "\n        renios_runtime.initialized = True", source, flags=re.M | re.S)
+    if count != 1:
+        raise ValueError("Expected one Ren’Py importer startup block")
+
+    cleanup = re.compile(r"(^        sys\.exit\(exit_status\)\n\n    finally:\n).*\Z", re.M | re.S)
+    source, count = cleanup.subn(r"\1        renios_runtime.finish(renpy)\n", source)
+    if count != 1:
+        raise ValueError("Expected one Ren’Py shutdown block")
+    bootstrap.write_text(source, encoding="utf-8")
+
+    module = engine / "__init__.py"
+    source = module.read_text(encoding="utf-8")
+    source = source.replace("        if mobile:\n            return\n",
+                            "        if mobile and not ios:\n            return\n")
+    source = source.replace("    if not mobile:\n        backup = Backup()",
+                            "    if not mobile or ios:\n        backup = Backup()")
+    source = source.replace('    if mobile:\n        raise Exception("Reloading is not supported on mobile platforms.")',
+                            '    if mobile and not ios:\n        raise Exception("Reloading is not supported on mobile platforms.")')
+    source = source.replace('    if not renpy.session.get("_keep_renderer", False):',
+                            '    if renpy.display.draw is not None and not renpy.session.get("_keep_renderer", False):')
+    module.write_text(source, encoding="utf-8")
+    for patched in (bootstrap, module):
+        for suffix in (".pyc", ".pyo"):
+            patched.with_suffix(suffix).unlink(missing_ok=True)
+        cache = patched.parent / "__pycache__"
+        for compiled in cache.glob(f"{patched.stem}.*.pyc"):
+            compiled.unlink()
+
+
 def prepare_runtime(version, cache, build, *, host=True):
     candidates = [VERSIONS[version]]
     if version == "8.6.0":
@@ -290,7 +330,8 @@ def prepare_runtime(version, cache, build, *, host=True):
     shutil.move(sdk / "lib" / python_dir, base / "lib" / python_dir)
     shutil.move(sdk / "renpy.py", base / "renpy_entry.py")
     shutil.copyfile(sdk / "LICENSE.txt", base / "RenPy-LICENSE.txt")
-    shutil.copyfile(ROOT / "Scripts" / "engine_main.py", base / "main.py")
+    configure_game_reload(base / "renpy")
+    shutil.copyfile(ROOT / "Scripts" / "engine_main.py", base / "renios_runtime.py")
     return prototype
 
 
@@ -308,7 +349,7 @@ def prepare(version, cache, legacy_versions=()):
         template = prepare_runtime(engine, cache, build / "engines" / engine, host=False)
         location = base / "Engines" / engine
         location.mkdir(parents=True)
-        # The Renios launcher finds base/main.py and base/lib relative to argv[0].
+        # The host passes this engine-specific base to its embedded interpreter.
         shutil.move(template / "base", location / "base")
 
     with ThreadPoolExecutor(max_workers=4) as pool:

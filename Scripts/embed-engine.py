@@ -9,7 +9,7 @@ SDK_SETTINGS = {
     "iphoneos": ("arm64-apple-ios26.0", "release"),
     "iphonesimulator": ("arm64-apple-ios26.0-simulator", "debug"),
 }
-ENTRY_POINTS = ("launcher_main", "SDL_SetMainReady", "SDL_PushEvent", "renios_legacy_set_event_pump",
+ENTRY_POINTS = ("renios_engine_play", "SDL_SetMainReady", "SDL_PushEvent", "renios_legacy_set_event_pump",
                 "renios_legacy_start_keyboard")
 
 
@@ -82,7 +82,13 @@ def embed(version, namespace, app, sdk):
     for system in sorted(systems):
         command.extend(["-framework", system])
     shim = Path(__file__).with_name("legacy-sdl.c")
-    subprocess.run([*command, str(shim), *ldflags, "-o", str(framework / name)], check=True)
+    runtime = Path(__file__).resolve().parents[1] / "App" / "Runtime.c"
+    series = python_libraries[0].stem.removeprefix("libpython")
+    python_defines = [f"-DRENIOS_PY2={int(series.startswith('2.'))}",
+                      f'-DRENIOS_PYTHON_SERIES="{series}"',
+                      f'-DRENIOS_PYTHON_DIGITS="{series.replace(".", "")}"']
+    subprocess.run([*command, *python_defines, str(shim), str(runtime), *ldflags,
+                    "-o", str(framework / name)], check=True)
     (framework / "Info.plist").write_bytes(plistlib.dumps({
         "CFBundleName": name,
         "CFBundleExecutable": name,

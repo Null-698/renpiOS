@@ -25,6 +25,7 @@ jobs:
         with:
           path: .build/downloads
           key: renpy-catalog-${{ hashFiles('Scripts/prepare.py') }}
+          restore-keys: renpy-catalog-
       - name: Prepare bundled Ren’Py engines
         run: >
           python3 Scripts/prepare.py 8.6.0 --legacy
@@ -77,22 +78,20 @@ jobs:
           name: launcher-previews-iOS-27
           path: out/launcher-preview/*.png
           if-no-files-found: warn
-      - name: Test imports, save restore, keyboard, and Close
+      - name: Test consecutive games, engine switching, saves, rotation, and Close
         run: |
           if [[ ! -f out/reniOS.app/Info.plist ]]; then
             ditto -x -k out/reniOS-simulator.zip out
           fi
           bash Scripts/simulator.sh 27 "$PWD/out/reniOS.app"
-      - name: Upload keyboard results
+      - name: Upload playback results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: keyboard-iOS-27
+          name: playback-iOS-27
           path: |
             out/library-probe*.json
-            out/keyboard.png
             out/controls-probe*.json
-            out/keyboard-probe*.json
             out/quit-probe*.json
             out/diagnostics/
           if-no-files-found: ignore

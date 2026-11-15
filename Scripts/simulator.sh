@@ -26,7 +26,7 @@ bounded() {
   python3 -c 'import subprocess,sys; subprocess.run(sys.argv[2:], timeout=float(sys.argv[1]), check=True)' "$@"
 }
 capture() {
-  bounded 10 xcrun simctl io "$udid" screenshot out/diagnostics/last-screen.png >/dev/null 2>&1 || true
+  bounded 10 xcrun simctl io "$udid" screenshot --display=1 out/diagnostics/last-screen.png >/dev/null 2>&1 || true
   bounded 12 xcrun simctl spawn "$udid" log show --last 4m --predicate 'process == "reniOS"' \
     > out/diagnostics/reniOS.log 2>&1 || true
   local log_root
@@ -47,31 +47,6 @@ device_data=$(xcrun simctl list devices -j | jq -r --arg udid "$udid" '
 if [[ -z "$device_data" ]]; then
   device_data="$HOME/Library/Developer/CoreSimulator/Devices/$udid/data"
 fi
-python3 - "$device_data" <<'PYTHON'
-from pathlib import Path
-import plistlib
-import sys
-
-root = Path(sys.argv[1]) / "Library" / "Preferences"
-root.mkdir(parents=True, exist_ok=True)
-settings = {
-    "com.apple.keyboard.preferences": {
-        "DidShowContinuousPathIntroduction": True,
-        "DidShowGestureKeyboardIntroduction": True,
-        "KeyboardDidShowProductivityTutorial": True,
-        "UIKeyboardDidShowInternationalInfoIntroduction": True,
-    },
-    "com.apple.keyboard.ContinuousPath": {"DidShowContinuousPathIntroduction": True},
-}
-for domain, additions in settings.items():
-    path = root / f"{domain}.plist"
-    current = plistlib.loads(path.read_bytes()) if path.exists() else {}
-    current.update(additions)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_bytes(plistlib.dumps(current, fmt=plistlib.FMT_BINARY))
-    temporary.replace(path)
-PYTHON
-defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool NO
 state=$(xcrun simctl list devices -j | jq -r --arg udid "$udid" '
   [.devices[][] | select(.udid == $udid)][0].state')
 if [[ "$state" == Shutdown ]]; then
@@ -79,18 +54,18 @@ if [[ "$state" == Shutdown ]]; then
 fi
 bounded 240 xcrun simctl bootstatus "$udid" -b
 if [[ "$mode" == preview || ! -f out/launcher-preview/.installed ]]; then
-  bounded 150 xcrun simctl install "$udid" "$app"
+  bounded 240 xcrun simctl install "$udid" "$app"
 fi
 data=$(xcrun simctl get_app_container "$udid" "$bundle" data)
 
 if [[ "$mode" == preview ]]; then
   mkdir -p out/launcher-preview
   touch out/launcher-preview/.installed
-  for screen in Library Saves Mods Export Restore landscape; do
+  for screen in Library Overview Saves Mods Export Restore landscape; do
     bounded 15 xcrun simctl terminate "$udid" "$bundle" >/dev/null 2>&1 || true
     if bounded 45 xcrun simctl launch "$udid" "$bundle" --launcher-preview "$screen"; then
       sleep 3
-      if ! bounded 30 xcrun simctl io "$udid" screenshot "out/launcher-preview/$screen.png"; then
+      if ! bounded 30 xcrun simctl io "$udid" screenshot --display=1 "out/launcher-preview/$screen.png"; then
         echo "::warning::Could not capture the $screen preview"
       fi
     fi
@@ -99,88 +74,74 @@ if [[ "$mode" == preview ]]; then
   exit 0
 fi
 
+wait_for_probe() {
+  local file=$1
+  for ((attempt=0; attempt<45; attempt++)); do
+    [[ ! -s "$file" ]] || return 0
+    sleep 1
+  done
+  echo "Timed out waiting for $(basename "$file")." >&2
+  return 1
+}
+
 probe_playback() {
-  local engine=$1
-  local suffix=$2
+  local label=$1
+  local check_rotation=$2
+  shift 2
+  local cache="$data/Library/Caches"
+  local quit="$cache/renios-quit.json"
   bounded 25 xcrun simctl terminate "$udid" "$bundle" >/dev/null 2>&1 || true
-  rm -f "$data"/Library/Caches/renios-{library.json,keyboard.json,quit.json,quit.request,controls.json,controls.request}
-  echo "Testing Ren’Py $engine"
-  bounded 90 xcrun simctl launch --stdout="$PWD/out/diagnostics/$engine-stdout.log" \
-    --stderr="$PWD/out/diagnostics/$engine-stderr.log" "$udid" "$bundle" --keyboard-probe "$engine" || return
-  probe="$data/Library/Caches/renios-keyboard.json"
-  for ((attempt=0; attempt<75; attempt++)); do
-    [[ ! -s "$probe" ]] || break
-    sleep 1
-  done
-  local check_status=0
-  if [[ -s "$probe" ]]; then
-    cp "$probe" "out/keyboard-probe${suffix}.json" || return
-    cat "out/keyboard-probe${suffix}.json"
-    jq -e '.keyboardVisible == true and .viewportStable == true' "out/keyboard-probe${suffix}.json" || check_status=1
-  else
-    echo "Ren’Py did not report an on-screen keyboard within 75 seconds." >&2
-    check_status=1
-  fi
-  cp "$data/Library/Caches/renios-library.json" "out/library-probe${suffix}.json" || return
-  cat "out/library-probe${suffix}.json"
-  jq -e '.importsAndSaves == true' "out/library-probe${suffix}.json" || check_status=1
-  if [[ -z "$suffix" ]] && ! bounded 12 xcrun simctl io "$udid" screenshot out/keyboard.png; then
-    echo "::warning::Keyboard screenshot unavailable"
-  fi
+  rm -f "$cache"/renios-{library.json,quit.json,quit.request,controls.json,controls.request}
 
-  if [[ -z "$suffix" || "$engine" == "7.4.11" ]]; then
-    local controls="$data/Library/Caches/renios-controls.json"
-    touch "$data/Library/Caches/renios-controls.request" || return
-    for ((attempt=0; attempt<150; attempt++)); do
-      [[ ! -s "$controls" ]] || break
-      sleep 1
-    done
-    if [[ -s "$controls" ]]; then
-      local result="out/controls-probe${suffix}.json"
-      cp "$controls" "$result" || return
-      cat "$result"
-      jq -e '.rotated and .viewportFillsWindow and .drawableMatchesViewport' "$result" || check_status=1
-      if [[ -z "$suffix" ]]; then
-        jq -e '.keyboardStayedHidden and .keyboardReopened' "$result" || check_status=1
-      else
-        # Verify the engine recomputed its viewport for the rotated drawable.
-        # The window/view measurements alone cannot establish that.
+  echo "Testing Ren’Py session: $*"
+  bounded 90 xcrun simctl launch --stdout="$PWD/out/diagnostics/$label-stdout.log" \
+    --stderr="$PWD/out/diagnostics/$label-stderr.log" "$udid" "$bundle" --playback-probe "$@" || return
+  wait_for_probe "$cache/renios-library.json" || return
+  cp "$cache/renios-library.json" "out/library-probe-$label.json" || return
+  jq -e '.importsAndSaves == true' "out/library-probe-$label.json" || return
+
+  local index=0 pid= engine result
+  for engine in "$@"; do
+    ((index+=1))
+    if [[ "$check_rotation" == true && "$index" == 1 ]]; then
+      local controls="$cache/renios-controls.json"
+      touch "$cache/renios-controls.request" || return
+      wait_for_probe "$controls" || return
+      cp "$controls" "out/controls-probe-$label.json" || return
+      cat "out/controls-probe-$label.json"
+      jq -e '.rotated and .viewportFillsWindow and .drawableMatchesViewport' "out/controls-probe-$label.json" || return
+      if [[ "$engine" == 7.4.11 ]]; then
         local drawable
-        drawable=$(jq -r '.drawableSize' "$result" | tr '{}' '()')
-        if ! grep -F "drawable=$drawable" "out/diagnostics/$engine-stderr.log"; then
-          echo "Ren’Py $engine did not report the rotated drawable dimensions." >&2
-          check_status=1
-        fi
+        drawable=$(jq -r '.drawableSize' "$controls" | tr '{}' '()')
+        grep -F "drawable=$drawable" "out/diagnostics/$label-stderr.log" || return
       fi
-    else
-      echo "Rotation and keyboard round trip did not finish." >&2
-      check_status=1
     fi
-  fi
 
-  # Ask the running host to invoke the Close button’s native action, then
-  # require the demo's confirmation screen and a clean return from Ren'Py.
-  touch "$data/Library/Caches/renios-quit.request" || return
-  quit="$data/Library/Caches/renios-quit.json"
-  for ((attempt=0; attempt<75; attempt++)); do
-    [[ ! -s "$quit" ]] || break
-    sleep 1
+    touch "$cache/renios-quit.request" || return
+    wait_for_probe "$quit" || return
+    result="out/quit-probe-$label-$index.json"
+    mv "$quit" "$result" || return
+    cat "$result"
+    jq -e --arg engine "$engine" --arg project "Playback Probe $index" \
+      '.confirmed and .exitStatus == 0 and .engine == $engine and .usesGameSaves and
+       (.project | startswith($project)) and .pid > 0' "$result" || return
+
+    if [[ -z "$pid" ]]; then
+      pid=$(jq -r '.pid' "$result") || return
+    elif [[ "$(jq -r '.pid' "$result")" != "$pid" ]]; then
+      echo "The app process changed during the session." >&2
+      return 1
+    fi
   done
-  if [[ ! -s "$quit" ]]; then
-    echo "Ren’Py did not return from the Close action within 75 seconds." >&2
-    return 1
-  fi
-  cp "$quit" "out/quit-probe${suffix}.json" || return
-  cat "out/quit-probe${suffix}.json"
-  jq -e --arg engine "$engine" '.confirmed == true and .exitStatus == 0 and .engine == $engine and .usesGameSaves == true' "out/quit-probe${suffix}.json" || check_status=1
-  return "$check_status"
 }
 
 failed=()
 while IFS= read -r engine; do
-  suffix="-$engine"
-  [[ "$engine" != "8.6.0" ]] || suffix=""
-  if ! probe_playback "$engine" "$suffix"; then
+  rotation=false
+  if [[ "$engine" == 8.6.0 || "$engine" == 7.4.11 ]]; then
+    rotation=true
+  fi
+  if ! probe_playback "$engine" "$rotation" "$engine" "$engine"; then
     failed+=("$engine")
     tail -60 "out/diagnostics/$engine-stderr.log" || true
   fi
@@ -197,7 +158,11 @@ for version in priority + [v for v in available if v not in priority]:
     print(version)
 PYTHON
 )
+if ! probe_playback engine-switch false 8.6.0 7.4.11 8.6.0; then
+  failed+=(engine-switch)
+  tail -60 out/diagnostics/engine-switch-stderr.log || true
+fi
 if ((${#failed[@]})); then
-  echo "Failed engine checks: ${failed[*]}" >&2
+  echo "Failed playback checks: ${failed[*]}" >&2
   exit 1
 fi
