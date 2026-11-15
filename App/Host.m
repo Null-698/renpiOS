@@ -229,22 +229,26 @@ static BOOL viewportFillsWindow(UIView *view) {
         && CGRectContainsRect(CGRectInset(actual, -0.5, -0.5), window.bounds);
 }
 
-static void probePlaybackControls(void) {
-    UITextField *field = gameTextField();
-    UIWindow *window = field.window;
+static BOOL startPlaybackControlsProbe(void) {
+    UIView *view = gameController.viewIfLoaded;
+    UIWindow *window = view.window;
     UIWindowScene *scene = window.windowScene;
-    if (!field.isFirstResponder || !scene) {
-        writeProbe(@{@"keyboardStayedHidden": @NO, @"rotated": @NO}, @"renios-controls.json");
-        return;
+    CGSize initialDrawable;
+    if (!scene || !readDrawableSize(view, &initialDrawable) || CGSizeEqualToSize(initialDrawable, CGSizeZero)) {
+        return NO;
     }
 
-    renios_toggle_keyboard();
-    // Exercise a real focus request while Ren’Py still has a live input prompt.
-    [field becomeFirstResponder];
+    UITextField *field = gameTextField();
+    const BOOL keyboardWasFocused = field.isFirstResponder;
+    if (keyboardWasFocused) {
+        renios_toggle_keyboard();
+        // Exercise a focus request while Ren’Py still has a live input prompt.
+        [field becomeFirstResponder];
+    }
     const BOOL startedInPortrait = window.bounds.size.height > window.bounds.size.width;
     [NSTimer scheduledTimerWithTimeInterval:0.8 repeats:NO block:^(NSTimer *timer) {
         if (!activePushEvent) { return; }
-        const BOOL stayedHidden = !gameTextField().isFirstResponder;
+        const BOOL stayedHidden = keyboardWasFocused && !gameTextField().isFirstResponder;
         UIInterfaceOrientationMask target = startedInPortrait
             ? UIInterfaceOrientationMaskLandscapeRight : UIInterfaceOrientationMaskPortrait;
         UIWindowSceneGeometryPreferencesIOS *preferences =
@@ -268,7 +272,7 @@ static void probePlaybackControls(void) {
             [rotationTimer invalidate];
 
             BOOL hiddenThroughRotation = stayedHidden && !gameTextField().isFirstResponder;
-            renios_toggle_keyboard();
+            if (keyboardWasFocused) { renios_toggle_keyboard(); }
             [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:NO block:^(NSTimer *reopened) {
                 UIView *current = gameController.viewIfLoaded;
                 CGSize actual = CGSizeZero;
@@ -278,13 +282,14 @@ static void probePlaybackControls(void) {
                     @"drawableSize": NSStringFromCGSize(actual),
                     @"expectedDrawableSize": NSStringFromCGSize(expectedDrawableSize(current)),
                     @"keyboardStayedHidden": @(hiddenThroughRotation),
-                    @"keyboardReopened": @(gameTextField().isFirstResponder),
+                    @"keyboardReopened": @(keyboardWasFocused && gameTextField().isFirstResponder),
                     @"rotated": @(rotated),
                     @"viewportFillsWindow": @(fillsWindow && viewportFillsWindow(gameController.viewIfLoaded))
                 }, @"renios-controls.json");
             }];
         }];
     }];
+    return YES;
 }
 
 int renios_play(const char *project, const char *saves, const char *engine, const char *orientation, int keyboardProbe) {
@@ -412,9 +417,8 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
         NSURL *request = probeFile(@"renios-quit.request");
         NSURL *controls = probeFile(@"renios-controls.request");
         quitProbe = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
-            if ([NSFileManager.defaultManager fileExistsAtPath:controls.path]) {
+            if ([NSFileManager.defaultManager fileExistsAtPath:controls.path] && startPlaybackControlsProbe()) {
                 [NSFileManager.defaultManager removeItemAtURL:controls error:NULL];
-                probePlaybackControls();
             }
             if (![NSFileManager.defaultManager fileExistsAtPath:request.path]) { return; }
 

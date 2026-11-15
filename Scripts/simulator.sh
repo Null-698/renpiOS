@@ -106,7 +106,7 @@ probe_playback() {
   if [[ -z "$suffix" ]]; then
     local controls="$data/Library/Caches/renios-controls.json"
     touch "$data/Library/Caches/renios-controls.request" || return
-    for ((attempt=0; attempt<20; attempt++)); do
+    for ((attempt=0; attempt<150; attempt++)); do
       [[ ! -s "$controls" ]] || break
       sleep 1
     done
