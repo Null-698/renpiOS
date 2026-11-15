@@ -113,7 +113,7 @@ probe_playback() {
     if [[ -s "$controls" ]]; then
       cp "$controls" out/controls-probe.json || return
       cat out/controls-probe.json
-      jq -e '.keyboardStayedHidden and .keyboardReopened and .rotated and .viewportFillsWindow' \
+      jq -e '.keyboardStayedHidden and .keyboardReopened and .rotated and .viewportFillsWindow and .drawableMatchesViewport' \
         out/controls-probe.json || check_status=1
     else
       echo "Rotation and keyboard round trip did not finish." >&2

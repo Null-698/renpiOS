@@ -3,6 +3,7 @@
 #import "Host.h"
 #include <dlfcn.h>
 #include <stdint.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +60,7 @@ static IMP originalLayout;
 static IMP originalTransition;
 static IMP originalShouldBeginEditing;
 static __weak UIViewController *gameController;
+static CGSize lastViewportSize;
 static BOOL keyboardDismissedByPlayer;
 static CGRect viewportAtInput;
 static __weak UIView *probedViewport;
@@ -85,17 +87,75 @@ static void fitGameViewport(UIViewController *controller) {
     }
 }
 
+static BOOL readDrawableSize(UIView *view, CGSize *size) {
+    SEL widthSelector = sel_registerName("backingWidth");
+    SEL heightSelector = sel_registerName("backingHeight");
+    if (![view respondsToSelector:widthSelector] || ![view respondsToSelector:heightSelector]) {
+        return NO;
+    }
+
+    int (*readWidth)(id, SEL) = (void *)[view methodForSelector:widthSelector];
+    int (*readHeight)(id, SEL) = (void *)[view methodForSelector:heightSelector];
+    *size = CGSizeMake(readWidth(view, widthSelector), readHeight(view, heightSelector));
+    return YES;
+}
+
+static CGSize expectedDrawableSize(UIView *view) {
+    // SDL's UIKit OpenGL view truncates points × content scale to pixels.
+    return CGSizeMake((int)(view.bounds.size.width * view.contentScaleFactor),
+                      (int)(view.bounds.size.height * view.contentScaleFactor));
+}
+
+static BOOL drawableSizeMatches(UIView *view, CGSize actual) {
+    CGSize expected = expectedDrawableSize(view);
+    return expected.width > 0 && expected.height > 0
+        && fabs(expected.width - actual.width) <= 1 && fabs(expected.height - actual.height) <= 1;
+}
+
+static BOOL repairGameDrawable(UIViewController *controller) {
+    UIView *view = controller.viewIfLoaded;
+    CGSize actual;
+    if (!view.window || !readDrawableSize(view, &actual) || drawableSizeMatches(view, actual)) {
+        return NO;
+    }
+
+    // SDL's OpenGL view reallocates its color/depth buffers during layout.
+    // Run that layout before Ren’Py computes the viewport from the new size.
+    [view setNeedsLayout];
+    [view layoutIfNeeded];
+    return YES;
+}
+
 static void layoutGameViewport(UIViewController *controller, SEL selector) {
-    // Set the scene-sized frame before SDL sends its resize event to Ren’Py.
+    UIViewController *previousController = gameController;
     fitGameViewport(controller);
+    CGSize size = controller.viewIfLoaded.bounds.size;
+    BOOL changedSize = previousController == controller && gameController == controller
+        && !CGSizeEqualToSize(lastViewportSize, size);
+    if (gameController == controller) { lastViewportSize = size; }
     ((void (*)(id, SEL))originalLayout)(controller, selector);
+
+    CGSize actual;
+    UIView *view = controller.viewIfLoaded;
+    if (changedSize && readDrawableSize(view, &actual) && !drawableSizeMatches(view, actual)) {
+        // Some scene resizes bypass the controller's transition coordinator.
+        // Defer the repair until UIKit has finished the current layout pass.
+        [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:NO block:^(NSTimer *timer) {
+            if (gameController == controller && repairGameDrawable(controller)) {
+                [controller viewDidLayoutSubviews];
+            }
+        }];
+    }
 }
 
 static void transitionGameViewport(UIViewController *controller, SEL selector, CGSize size,
                                    id<UIViewControllerTransitionCoordinator> coordinator) {
     ((void (*)(id, SEL, CGSize, id))originalTransition)(controller, selector, size, coordinator);
     [coordinator animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
-        if (activePushEvent) { [controller viewDidLayoutSubviews]; }
+        if (gameController != controller) { return; }
+        fitGameViewport(controller);
+        repairGameDrawable(controller);
+        [controller viewDidLayoutSubviews];
     }];
 }
 
@@ -201,13 +261,22 @@ static void probePlaybackControls(void) {
             BOOL rotated = size.width > 0 && size.height > 0
                 && (size.height > size.width) != startedInPortrait;
             BOOL fillsWindow = viewportFillsWindow(view);
-            if (++attempts < 32 && (!rotated || !fillsWindow)) { return; }
+            CGSize initialDrawable;
+            BOOL drawableMatches = readDrawableSize(view, &initialDrawable)
+                && drawableSizeMatches(view, initialDrawable);
+            if (++attempts < 32 && (!rotated || !fillsWindow || !drawableMatches)) { return; }
             [rotationTimer invalidate];
 
             BOOL hiddenThroughRotation = stayedHidden && !gameTextField().isFirstResponder;
             renios_toggle_keyboard();
             [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:NO block:^(NSTimer *reopened) {
+                UIView *current = gameController.viewIfLoaded;
+                CGSize actual = CGSizeZero;
+                BOOL measured = readDrawableSize(current, &actual);
                 writeProbe(@{
+                    @"drawableMatchesViewport": @(drawableMatches && measured && drawableSizeMatches(current, actual)),
+                    @"drawableSize": NSStringFromCGSize(actual),
+                    @"expectedDrawableSize": NSStringFromCGSize(expectedDrawableSize(current)),
                     @"keyboardStayedHidden": @(hiddenThroughRotation),
                     @"keyboardReopened": @(gameTextField().isFirstResponder),
                     @"rotated": @(rotated),
@@ -374,6 +443,7 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
     activeStartKeyboard = NULL;
     keyboardDismissedByPlayer = NO;
     gameController = nil;
+    lastViewportSize = CGSizeZero;
     if (legacyEventPump) { legacyEventPump(0); }
     if (windowInitializer) { method_setImplementation(windowInitializer, previousWindowInitializer); }
     legacyScene = nil;
