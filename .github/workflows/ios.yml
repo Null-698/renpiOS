@@ -43,11 +43,11 @@ jobs:
           name: reniOS-IPA
           path: out/reniOS-unsigned.ipa
           if-no-files-found: error
-      - name: Build the shared simulator app
+      - name: Build the iOS 27 simulator app
         run: |
           bash Scripts/build-simulator.sh
           ditto -c -k --keepParent .build/simulator/Build/Products/Debug-iphonesimulator/reniOS.app out/reniOS-simulator.zip
-      - name: Upload shared simulator app
+      - name: Upload iOS 27 simulator app
         uses: actions/upload-artifact@v4
         with:
           name: reniOS-simulator
@@ -55,26 +55,12 @@ jobs:
           if-no-files-found: error
 
   test:
-    name: Playback · iOS ${{ matrix.os }}
+    name: Playback · iOS 27
     needs: build
-    runs-on: ${{ matrix.runner }}
+    runs-on: xcode-27
     timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: '26'
-            runner: macos-26
-          - os: '27'
-            runner: xcode-27
     steps:
       - uses: actions/checkout@v5
-      - name: Select Xcode
-        if: matrix.os == '26'
-        run: |
-          xcode=$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' | sort -V | tail -n1)
-          test -n "$xcode"
-          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
           name: reniOS-simulator
@@ -82,12 +68,12 @@ jobs:
       - name: Test imports, save restore, keyboard, and Close
         run: |
           ditto -x -k out/reniOS-simulator.zip out
-          bash Scripts/simulator.sh "${{ matrix.os }}" "$PWD/out/reniOS.app"
+          bash Scripts/simulator.sh 27 "$PWD/out/reniOS.app"
       - name: Upload keyboard results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: keyboard-iOS-${{ matrix.os }}
+          name: keyboard-iOS-27
           path: |
             out/library-probe*.json
             out/keyboard.png

@@ -13,7 +13,7 @@ Open **Actions → iOS builds** for one unsigned ARM64 IPA for iOS and iPadOS 26
 | 3.12 | 8.4.1, 8.5.0, 8.5.2, 8.5.3, 8.6.0 prerelease |
  The IPA requires signing before installation.
 
-Each run also builds one simulator app and installs that same build on iOS 26 and iOS 27 simulators. The test jobs publish keyboard screenshots and viewport measurements. GitHub-hosted Macs run every build, and CI checks the official SDK and Renios archives against pinned checksums.
+Each run also builds and tests an app on the iOS 27 simulator. The test job publishes keyboard screenshots and viewport measurements. GitHub-hosted Macs run every build, and CI checks the official SDK and Renios archives against pinned checksums.
 
 ## Library
 
