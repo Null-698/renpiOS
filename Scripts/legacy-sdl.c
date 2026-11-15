@@ -6,16 +6,9 @@ void renios_legacy_set_event_pump(int enabled)
     SDL_iPhoneSetEventPump(enabled);
 }
 
-extern int SDL_IsTextInputActive(void);
 extern void SDL_StartTextInput(void);
-extern void SDL_StopTextInput(void);
 
-int renios_legacy_toggle_keyboard(void)
+void renios_legacy_start_keyboard(void)
 {
-    if (SDL_IsTextInputActive()) {
-        SDL_StopTextInput();
-        return 0;
-    }
     SDL_StartTextInput();
-    return 1;
 }

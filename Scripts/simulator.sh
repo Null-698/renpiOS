@@ -78,7 +78,7 @@ probe_playback() {
   local engine=$1
   local suffix=$2
   bounded 25 xcrun simctl terminate "$udid" "$bundle" >/dev/null 2>&1 || true
-  rm -f "$data"/Library/Caches/renios-{library.json,keyboard.json,quit.json,quit.request}
+  rm -f "$data"/Library/Caches/renios-{library.json,keyboard.json,quit.json,quit.request,controls.json,controls.request}
   echo "Testing Ren’Py $engine"
   bounded 90 xcrun simctl launch --stdout="$PWD/out/diagnostics/$engine-stdout.log" \
     --stderr="$PWD/out/diagnostics/$engine-stderr.log" "$udid" "$bundle" --keyboard-probe "$engine" || return
@@ -101,6 +101,24 @@ probe_playback() {
   jq -e '.importsAndSaves == true' "out/library-probe${suffix}.json" || check_status=1
   if [[ -z "$suffix" ]] && ! bounded 12 xcrun simctl io "$udid" screenshot out/keyboard.png; then
     echo "::warning::Keyboard screenshot unavailable"
+  fi
+
+  if [[ -z "$suffix" && -s "$probe" ]]; then
+    local controls="$data/Library/Caches/renios-controls.json"
+    touch "$data/Library/Caches/renios-controls.request" || return
+    for ((attempt=0; attempt<20; attempt++)); do
+      [[ ! -s "$controls" ]] || break
+      sleep 1
+    done
+    if [[ -s "$controls" ]]; then
+      cp "$controls" out/controls-probe.json || return
+      cat out/controls-probe.json
+      jq -e '.keyboardStayedHidden and .keyboardReopened and .rotated and .viewportFillsWindow' \
+        out/controls-probe.json || check_status=1
+    else
+      echo "Rotation and keyboard round trip did not finish." >&2
+      check_status=1
+    fi
   fi
 
   # Ask the running host to invoke the Close button’s native action, then
