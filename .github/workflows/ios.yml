@@ -66,7 +66,7 @@ jobs:
         with:
           name: reniOS-simulator
           path: out
-      - name: Test keyboard and Close action
+      - name: Test imports, save restore, keyboard, and Close
         run: |
           ditto -x -k out/reniOS-simulator.zip out
           bash Scripts/simulator.sh "${{ matrix.os }}" "$PWD/out/reniOS.app"
@@ -76,6 +76,7 @@ jobs:
         with:
           name: keyboard-iOS-${{ matrix.os }}
           path: |
+            out/library-probe.json
             out/keyboard.png
             out/keyboard-probe.json
             out/quit-probe.json

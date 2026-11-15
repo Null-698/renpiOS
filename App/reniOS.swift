@@ -22,9 +22,27 @@ final class Session {
         Bundle.main.object(forInfoDictionaryKey: "ReniosEngineVersion") as? String ?? ""
     }
 
+    static var installedEngines: [String] {
+        Bundle.main.object(forInfoDictionaryKey: "ReniosInstalledEngines") as? [String] ?? [engine]
+    }
+
+    static func automaticEngine(for novel: Novel) -> String? {
+        EngineVersion.choose(for: novel.detectedEngine, from: installedEngines, default: engine)
+    }
+
+    static func engine(for novel: Novel) -> String? {
+        if let override = novel.engineOverride, installedEngines.contains(override) { return override }
+        return automaticEngine(for: novel)
+    }
+
     func run() {
         if ProcessInfo.processInfo.arguments.contains("--keyboard-probe") {
             do {
+                #if DEBUG
+                let result = ["importsAndSaves": try LibraryStore.checkImportsAndSaves()]
+                let output = URL.cachesDirectory.appending(path: "renios-library.json")
+                try JSONEncoder().encode(result).write(to: output, options: .atomic)
+                #endif
                 let demo = try LibraryStore.installDemo()
                 try play(demo, probe: true)
             } catch {
@@ -60,7 +78,26 @@ final class Session {
     }
 
     func launch(_ novel: Novel) {
+        guard !isImporting else { return }
         pending = novel
+    }
+
+    func update(_ novel: Novel) {
+        do {
+            try LibraryStore.update(novel)
+            novels = LibraryStore.list()
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    func restore(_ archive: URL, to novel: Novel, replacing: Bool) async throws -> Int {
+        guard !isImporting else { return 0 }
+        isImporting = true
+        defer { isImporting = false }
+        return try await Task.detached(priority: .userInitiated) {
+            try LibraryStore.restore(archive, to: novel, replacing: replacing)
+        }.value
     }
 
     func add(_ source: URL?) {
@@ -95,13 +132,19 @@ final class Session {
     }
 
     private func play(_ novel: Novel, probe: Bool = false) throws {
+        guard Self.engine(for: novel) == Self.engine else {
+            message = "This game needs a different Ren’Py engine."
+            return
+        }
         try FileManager.default.createDirectory(at: novel.saves, withIntermediateDirectories: true)
         try LibraryStore.recordPlay(novel)
         let overlay = probe ? nil : makeGameOverlay()
         defer { overlay?.isHidden = true }
         let result = novel.root.path.withCString { game in
             novel.saves.path.withCString { saves in
-                renios_play(game, saves, probe ? 1 : 0)
+                (novel.orientation?.sdlHint ?? "").withCString { hint in
+                    renios_play(game, saves, hint, probe ? 1 : 0)
+                }
             }
         }
         hasPlayed = true
@@ -216,7 +259,7 @@ private struct LibraryScreen: View {
                 }
             }
             .sheet(item: $selected) { novel in
-                NovelSheet(novel: novel, session: session)
+                NovelSheet(novel: session.novels.first { $0.id == novel.id } ?? novel, session: session)
             }
             .alert("reniOS", isPresented: Binding(
                 get: { session.message != nil },
@@ -401,6 +444,25 @@ private struct NovelSheet: View {
     @State private var backup: URL?
     @State private var confirmingRemoval = false
     @State private var backupError: String?
+    @State private var importingSaves = false
+    @State private var saveArchive: URL?
+    @State private var confirmingRestore = false
+
+    private var orientation: Binding<GameOrientation> {
+        Binding(get: { novel.orientation ?? .automatic }, set: { value in
+            var updated = novel
+            updated.orientation = value
+            session.update(updated)
+        })
+    }
+
+    private var engine: Binding<String?> {
+        Binding(get: { novel.engineOverride }, set: { value in
+            var updated = novel
+            updated.engineOverride = value
+            session.update(updated)
+        })
+    }
 
     var body: some View {
         NavigationStack {
@@ -412,8 +474,24 @@ private struct NovelSheet: View {
                     Text(novel.title)
                         .font(.system(.largeTitle, design: .serif))
                         .foregroundStyle(cream)
-                    Text("Ren’Py \(Session.engine)")
-                        .font(.footnote.monospaced()).foregroundStyle(.secondary)
+                    if let version = novel.detectedEngine {
+                        Text("Built with Ren’Py \(version)")
+                            .font(.footnote.monospaced()).foregroundStyle(.secondary)
+                    }
+                    Picker("Engine", selection: engine) {
+                        Text(Session.automaticEngine(for: novel).map { "Auto (\($0))" } ?? "Auto (Unavailable)")
+                            .tag(nil as String?)
+                        ForEach(Session.installedEngines, id: \.self) { version in
+                            Text(version).tag(Optional(version))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    Picker("Orientation", selection: orientation) {
+                        ForEach(GameOrientation.allCases) { value in
+                            Text(value.rawValue).tag(value)
+                        }
+                    }
+                    .pickerStyle(.menu)
                     if session.hasPlayed {
                         Label("Reopen reniOS to play again.", systemImage: "arrow.clockwise")
                             .font(.footnote)
@@ -424,6 +502,7 @@ private struct NovelSheet: View {
                             session.launch(novel)
                         }
                         .buttonStyle(.glassProminent)
+                        .disabled(session.isImporting || Session.engine(for: novel) == nil)
                     }
                     if let backup {
                         ShareLink(item: backup) { Label("Share Saves", systemImage: "square.and.arrow.up") }
@@ -435,6 +514,9 @@ private struct NovelSheet: View {
                         }
                         .buttonStyle(.glass)
                     }
+                    Button("Restore Saves", systemImage: "arrow.down.to.line") { importingSaves = true }
+                        .buttonStyle(.glass)
+                        .disabled(session.isImporting)
                     if let backupError { Text(backupError).font(.footnote).foregroundStyle(.secondary) }
                 }
                 .padding(24)
@@ -449,7 +531,22 @@ private struct NovelSheet: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Remove Game", systemImage: "trash", role: .destructive) { confirmingRemoval = true }
                         .labelStyle(.iconOnly)
+                        .disabled(session.isImporting)
                 }
+            }
+            .fileImporter(isPresented: $importingSaves, allowedContentTypes: [.zip]) { result in
+                switch result {
+                case .success(let archive):
+                    saveArchive = archive
+                    confirmingRestore = true
+                case .failure(let error):
+                    backupError = error.localizedDescription
+                }
+            }
+            .confirmationDialog("Restore saves?", isPresented: $confirmingRestore, titleVisibility: .visible) {
+                Button("Keep Existing Saves") { restore(replacing: false) }
+                Button("Replace Matching Saves", role: .destructive) { restore(replacing: true) }
+                Button("Cancel", role: .cancel) { saveArchive = nil }
             }
             .confirmationDialog("Remove \(novel.title)?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
                 Button("Remove Game", role: .destructive) { session.delete(novel); dismiss() }
@@ -459,4 +556,18 @@ private struct NovelSheet: View {
         }
         .tint(amber)
     }
+    private func restore(replacing: Bool) {
+        guard let archive = saveArchive else { return }
+        saveArchive = nil
+        Task {
+            do {
+                let count = try await session.restore(archive, to: novel, replacing: replacing)
+                backup = nil
+                backupError = count == 0 ? "All matching saves were kept." : "Restored \(count) save file(s)."
+            } catch {
+                backupError = error.localizedDescription
+            }
+        }
+    }
+
 }

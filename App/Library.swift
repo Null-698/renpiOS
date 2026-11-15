@@ -6,6 +6,9 @@ struct Novel: Codable, Identifiable, Equatable, Sendable {
     let title: String
     let imported: Date
     var lastPlayed: Date?
+    var detectedEngine: String?
+    var engineOverride: String?
+    var orientation: GameOrientation?
 
     var root: URL { LibraryStore.games.appending(path: id.uuidString, directoryHint: .isDirectory) }
     var saves: URL { LibraryStore.saves.appending(path: id.uuidString, directoryHint: .isDirectory) }
@@ -20,7 +23,7 @@ struct Novel: Codable, Identifiable, Equatable, Sendable {
 }
 
 enum ImportFailure: LocalizedError {
-    case missingGame, unsafeEntry, tooLarge, missingDemo
+    case missingGame, unsafeEntry, tooLarge, missingDemo, missingSaves
 
     var errorDescription: String? {
         switch self {
@@ -28,6 +31,7 @@ enum ImportFailure: LocalizedError {
         case .unsafeEntry: "The archive contains an unsupported file path."
         case .tooLarge: "The game is too large for the available storage."
         case .missingDemo: "The sample game is missing from this build."
+        case .missingSaves: "This archive contains no Ren’Py saves."
         }
     }
 }
@@ -62,7 +66,7 @@ enum LibraryStore {
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
 
         let title = override ?? source.deletingPathExtension().lastPathComponent
-        let novel = Novel(id: UUID(), title: title, imported: .now)
+        var novel = Novel(id: UUID(), title: title, imported: .now)
         let temp = games.appending(path: ".import-\(novel.id.uuidString)")
         try fm.createDirectory(at: temp, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: temp) }
@@ -71,8 +75,9 @@ enum LibraryStore {
 
         if try source.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true {
             try importDirectory(source, into: game)
+            novel.detectedEngine = detectInDirectory(source)
         } else {
-            try importArchive(source, into: game)
+            novel.detectedEngine = try importArchive(source, into: game)
         }
 
         guard containsScripts(in: game) else { throw ImportFailure.missingGame }
@@ -95,6 +100,115 @@ enum LibraryStore {
         return destination
     }
 
+    static func update(_ novel: Novel) throws {
+        try write(novel, to: novel.root)
+    }
+
+    static func restore(_ source: URL, to novel: Novel, replacing: Bool) throws -> Int {
+        let scoped = source.startAccessingSecurityScopedResource()
+        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+
+        let archive = try Archive(url: source, accessMode: .read)
+        var entries: [(Entry, String)] = []
+        var names: Set<String> = []
+        var directories: Set<[String]> = []
+        for entry in archive {
+            let parts = try safeParts(entry.path)
+            guard let name = parts.last, name == "persistent" || name.lowercased().hasSuffix(".save") else {
+                continue
+            }
+            let normalized = name.precomposedStringWithCanonicalMapping.lowercased()
+            guard entry.type == .file, names.insert(normalized).inserted else {
+                throw ImportFailure.unsafeEntry
+            }
+            directories.insert(Array(parts.dropLast()))
+            entries.append((entry, name))
+        }
+        guard !entries.isEmpty else { throw ImportFailure.missingSaves }
+        guard directories.count == 1 else { throw ImportFailure.unsafeEntry }
+
+        try fm.createDirectory(at: saves, withIntermediateDirectories: true)
+        let staging = saves.appending(path: ".restore-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: staging) }
+        let alreadyExists = fm.fileExists(atPath: novel.saves.path)
+        if alreadyExists {
+            try fm.copyItem(at: novel.saves, to: staging)
+        } else {
+            try fm.createDirectory(at: staging, withIntermediateDirectories: false)
+        }
+
+        var count = 0
+        for (entry, name) in entries {
+            let destination = staging.appending(path: name)
+            if fm.fileExists(atPath: destination.path) {
+                guard replacing else { continue }
+                try fm.removeItem(at: destination)
+            }
+            _ = try archive.extract(entry, to: destination)
+            count += 1
+        }
+        guard count > 0 else { return 0 }
+        if alreadyExists {
+            _ = try fm.replaceItemAt(novel.saves, withItemAt: staging)
+        } else {
+            try fm.moveItem(at: staging, to: novel.saves)
+        }
+        return count
+    }
+
+    #if DEBUG
+    static func checkImportsAndSaves() throws -> Bool {
+        let fixtures = URL.temporaryDirectory.appending(path: UUID().uuidString)
+        try fm.createDirectory(at: fixtures, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: fixtures) }
+        func add(_ contents: String, at path: String, in directory: URL) throws {
+            let output = directory.appending(path: path)
+            try fm.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(contents.utf8).write(to: output)
+        }
+
+        let desktop = fixtures.appending(path: "desktop")
+        try add("version = '8.3.4.25010101'", at: "Novel/renpy/vc_version.py", in: desktop)
+        try add("label start:\n    return", at: "Novel/game/script.rpy", in: desktop)
+        let zip = fixtures.appending(path: "novel.zip")
+        try fm.zipItem(at: desktop, to: zip, shouldKeepParent: false)
+        let novel = try install(zip)
+        defer {
+            try? delete(novel)
+            try? fm.removeItem(at: novel.saves)
+        }
+
+        let android = fixtures.appending(path: "android")
+        try add("version = '7.8.8.25010101'", at: "assets/x-renpy/x-vc_version.py", in: android)
+        try add("label start:\n    return", at: "assets/x-game/x-script.rpy", in: android)
+        let apk = fixtures.appending(path: "novel.apk")
+        try fm.zipItem(at: android, to: apk, shouldKeepParent: false)
+        let mobile = try install(apk)
+        defer { try? delete(mobile) }
+
+        guard novel.detectedEngine == "8.3.4", mobile.detectedEngine == "7.8.8",
+              fm.fileExists(atPath: mobile.root.appending(path: "game/script.rpy").path),
+              EngineVersion.choose(for: novel.detectedEngine, from: ["8.3.4", "8.3.7", "8.6.0"], default: "8.6.0") == "8.3.4",
+              EngineVersion.choose(for: mobile.detectedEngine, from: ["8.6.0"], default: "8.6.0") == nil else {
+            return false
+        }
+
+        let saved = fixtures.appending(path: "saved")
+        try add("backup", at: "1-1-LT1.save", in: saved)
+        try add("persistent", at: "persistent", in: saved)
+        let saveZip = fixtures.appending(path: "saves.zip")
+        try fm.zipItem(at: saved, to: saveZip, shouldKeepParent: false)
+        try add("current", at: "1-1-LT1.save", in: novel.saves)
+        try add("unrelated", at: "2-1-LT1.save", in: novel.saves)
+        let slot = novel.saves.appending(path: "1-1-LT1.save")
+        let keepCount = try restore(saveZip, to: novel, replacing: false)
+        guard keepCount == 1, try String(contentsOf: slot, encoding: .utf8) == "current" else { return false }
+        let replaceCount = try restore(saveZip, to: novel, replacing: true)
+        return replaceCount == 2 && (try? String(contentsOf: slot, encoding: .utf8)) == "backup"
+            && fm.fileExists(atPath: novel.saves.appending(path: "2-1-LT1.save").path)
+    }
+    #endif
+
     private static func write(_ novel: Novel, to folder: URL) throws {
         try JSONEncoder().encode(novel).write(to: folder.appending(path: "novel.json"), options: .atomic)
     }
@@ -106,7 +220,49 @@ enum LibraryStore {
         return parts.filter { !$0.isEmpty }
     }
 
-    private static func importArchive(_ source: URL, into destination: URL) throws {
+    private static let metadataLimit = 256 * 1024
+
+    private static func detectInDirectory(_ source: URL) -> String? {
+        let engine = source.appending(path: "renpy")
+        guard let info = try? engine.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+              info.isDirectory == true, info.isSymbolicLink != true else { return nil }
+        for name in EngineVersion.metadata {
+            let file = engine.appending(path: name)
+            guard let info = try? file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]),
+                  info.isRegularFile == true, info.isSymbolicLink != true,
+                  let bytes = info.fileSize, bytes <= metadataLimit,
+                  let data = try? Data(contentsOf: file) else { continue }
+            if let version = EngineVersion.detect(in: data, filename: name) { return version }
+        }
+        return nil
+    }
+
+    private static func detectInArchive(_ archive: Archive, entries: [(Entry, [String])],
+                                        project: [String], android: Bool) -> String? {
+        let candidates = entries.compactMap { entry, parts -> (Entry, String, Int)? in
+            let normalized = android ? parts.map { $0.hasPrefix("x-") ? String($0.dropFirst(2)) : $0 } : parts
+            guard EngineVersion.isMetadata(normalized),
+                  UInt64(entry.uncompressedSize) <= UInt64(metadataLimit),
+                  let name = normalized.last, let rank = EngineVersion.metadata.firstIndex(of: name) else { return nil }
+            let root = Array(normalized.dropLast(2))
+            guard root == project || (android && (root == ["assets"] || root == ["assets", "private"])) else {
+                return nil
+            }
+            return (entry, name, rank)
+        }
+        for (entry, name, _) in candidates.sorted(by: { $0.2 < $1.2 }).prefix(12) {
+            var data = Data()
+            do {
+                _ = try archive.extract(entry) { data.append($0) }
+                if let version = EngineVersion.detect(in: data, filename: name) { return version }
+            } catch {
+                continue
+            }
+        }
+        return nil
+    }
+
+    private static func importArchive(_ source: URL, into destination: URL) throws -> String? {
         let archive = try Archive(url: source, accessMode: .read)
         let isAPK = source.pathExtension.lowercased() == "apk"
         var entries: [(Entry, [String])] = []
@@ -115,7 +271,8 @@ enum LibraryStore {
             let parts = try safeParts(entry.path)
             guard entry.type == .file else { continue }
             entries.append((entry, parts))
-            if let index = parts.dropLast().firstIndex(of: "game") {
+            if let index = parts.dropLast().firstIndex(of: "game"),
+               let name = parts.last, ["rpy", "rpyc", "rpa"].contains((name as NSString).pathExtension.lowercased()) {
                 possibleRoots.insert(Array(parts[...index]))
             }
         }
@@ -156,6 +313,7 @@ enum LibraryStore {
             try fm.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
             _ = try archive.extract(entry, to: output)
         }
+        return detectInArchive(archive, entries: entries, project: Array(prefix.dropLast()), android: isAPK)
     }
 
     private static func importDirectory(_ source: URL, into destination: URL) throws {

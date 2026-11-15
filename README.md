@@ -10,9 +10,11 @@ Each run also builds one simulator app and installs that same build on iOS 26 an
 
 ## Library
 
-Import a ZIP, a Ren’Py Android APK, or an extracted game folder. Imports use the portable game files. A game that depends on custom native modules, an unsupported archive layout, desktop APIs, or a different Python version may fail to run. The bundled sample includes a text prompt for testing touch input.
+Import a ZIP, a Ren’Py Android APK, or an extracted game folder. Imports use the portable game files. A game that depends on custom native modules, an unsupported archive layout, desktop APIs, or a different Python version may fail to run. The library follows device rotation. Each game can use automatic, portrait, or landscape orientation. The bundled sample includes a text prompt for testing touch input.
 
-Games and per-game saves are exposed in **Files → On My iPhone/iPad → reniOS**. Open a game’s details to export its save folder as a ZIP. Removing a game preserves saves under that game's ID. Reopen the app before starting a second game so each session gets a fresh embedded interpreter.
+The importer checks the packaged Ren’Py version in game folders, ZIPs, and APKs with visible engine metadata. Automatic selection prefers the same major and minor series. When metadata is absent, the player uses its bundled default. Each game can select an installed engine manually. The current IPA includes one runtime, Ren’Py 8.6.0.
+
+Games and per-game saves are exposed in **Files → On My iPhone/iPad → reniOS**. Open a game’s details to export its save folder as a ZIP or restore it to that game. On restore you can keep existing saves or replace matching files. Removing a game preserves saves under that game's ID. Reopen the app before starting a second game so each session gets a fresh embedded interpreter.
 
 ## Keyboard regression
 

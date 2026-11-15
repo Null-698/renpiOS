@@ -78,6 +78,9 @@ if [[ ! -s "$probe" ]]; then
   echo "Ren’Py did not report an on-screen keyboard within 75 seconds." >&2
   exit 1
 fi
+cp "$data/Library/Caches/renios-library.json" out/library-probe.json
+cat out/library-probe.json
+jq -e '.importsAndSaves == true' out/library-probe.json
 cp "$probe" out/keyboard-probe.json
 cat out/keyboard-probe.json
 jq -e '.keyboardVisible == true and .viewportStable == true' out/keyboard-probe.json

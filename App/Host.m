@@ -56,7 +56,7 @@ static void writeKeyboardProbe(void) {
     writeProbe(result, @"renios-keyboard.json");
 }
 
-int renios_play(const char *project, const char *saves, int keyboardProbe) {
+int renios_play(const char *project, const char *saves, const char *orientation, int keyboardProbe) {
     Class controller = NSClassFromString(@"SDL_uikitviewcontroller");
     keyboardMethod = controller ? class_getInstanceMethod(controller, sel_registerName("updateKeyboard")) : NULL;
     if (!keyboardMethod) { return -2; }
@@ -89,7 +89,10 @@ int renios_play(const char *project, const char *saves, int keyboardProbe) {
         (char *)NSBundle.mainBundle.executablePath.fileSystemRepresentation,
         (char *)project, "--savedir", (char *)saves, NULL
     };
+    const char *hint = RENIOS_SDL3 ? "SDL_ORIENTATIONS" : "SDL_IOS_ORIENTATIONS";
+    if (orientation[0]) { setenv(hint, orientation, 1); }
     int status = launcher_main(4, argv);
+    if (orientation[0]) { unsetenv(hint); }
 
     [quitProbe invalidate];
     if (probeEnabled) {
