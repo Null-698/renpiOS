@@ -181,7 +181,7 @@ enum LibraryStore {
 
         let android = fixtures.appending(path: "android")
         try add("label start:\n    return", at: "assets/x-game/x-script.rpy", in: android)
-        // A Renios-compatible Android fixture uses the upstream private.mp3 layout.
+        // Use RAPT’s private.mp3 layout for the Android fixture.
         let privateData = Data(base64Encoded: "H4sIAAAAAAACA+3RsQrCMBSF4Tv7FNm6xZs0TVx8FhHp0KWW1Bb69qYiCM4ihf7fci5nOcPNbT8sx/l2mds8dvfeDov8mhYxhFcW36lah8+99s5FH8Wo/ME0Pq65zMs+vd9uzmaqkj3ZZH2jtUvqq4MAAAAAAAAAAAAAAAAAADbrCUT0DV0AKAAA")!
         try privateData.write(to: android.appending(path: "assets/private.mp3"))
         let apk = fixtures.appending(path: "novel.apk")
@@ -304,7 +304,7 @@ enum LibraryStore {
                 metadata[filename] = version
                 if filename == "vc_version.py" { return version }
             }
-            guard gzseek(stream, z_off_t(next), SEEK_SET) == z_off_t(next) else { break }
+            guard Int(gzseek(stream, numericCast(next), SEEK_SET)) == next else { break }
             position = next
         }
         return EngineVersion.metadata.compactMap { metadata[$0] }.first

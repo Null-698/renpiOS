@@ -6,6 +6,7 @@ init python:
 label start:
     scene expression Solid("#232741")
     if os.environ.get("RENIOS_KEYBOARD_PROBE") == "1":
+        $ os.environ["RENIOS_PROBE_ENGINE"] = "{}.{}.{}".format(*tuple(renpy.version_tuple)[:3])
         show text "The Observatory" at truecenter
         $ probe_name = renpy.input("Keyboard check", length=24)
         return

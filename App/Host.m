@@ -152,6 +152,7 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
         }];
         setenv("RENIOS_KEYBOARD_PROBE", "1", 1);
         unsetenv("RENIOS_QUIT_CONFIRMED");
+        unsetenv("RENIOS_PROBE_ENGINE");
         NSURL *request = probeFile(@"renios-quit.request");
         quitProbe = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
             if (![NSFileManager.defaultManager fileExistsAtPath:request.path]) { return; }
@@ -181,9 +182,11 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
     if (probeEnabled) {
         const char *confirmed = getenv("RENIOS_QUIT_CONFIRMED");
         BOOL confirmationRan = confirmed && strcmp(confirmed, "1") == 0;
-        writeProbe(@{@"confirmed": confirmationRan ? @YES : @NO, @"exitStatus": @(status), @"engine": version},
-                   @"renios-quit.json");
+        const char *reported = getenv("RENIOS_PROBE_ENGINE");
+        writeProbe(@{@"confirmed": confirmationRan ? @YES : @NO, @"exitStatus": @(status),
+                     @"engine": reported ? @(reported) : @""}, @"renios-quit.json");
         unsetenv("RENIOS_QUIT_CONFIRMED");
+        unsetenv("RENIOS_PROBE_ENGINE");
         unsetenv("RENIOS_KEYBOARD_PROBE");
     }
     if (observer) { [NSNotificationCenter.defaultCenter removeObserver:observer]; }
