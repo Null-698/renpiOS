@@ -158,7 +158,7 @@ def app_icon(prototype):
     }))
 
 
-def prepare(version, cache):
+def prepare_runtime(version, cache, build):
     candidates = [VERSIONS[version]]
     if version == "8.6.0":
         candidates.append(PREVIOUS_PREVIEW)
@@ -167,10 +167,7 @@ def prepare(version, cache):
     if {name: value[1] for name, value in files.items()} not in candidates:
         raise ValueError("The Ren’Py SDK and iOS pack belong to different release builds")
     archives = {name: value[0] for name, value in files.items()}
-    build = ROOT / ".build" / "project"
-    if build.exists():
-        shutil.rmtree(build)
-    build.mkdir(parents=True)
+    build.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archives["renios.zip"]) as archive:
         archive.extractall(build)
     prototype = build / "renios" / "prototype"
@@ -193,7 +190,28 @@ def prepare(version, cache):
     shutil.move(sdk / "renpy.py", base / "renpy_entry.py")
     shutil.copyfile(sdk / "LICENSE.txt", base / "RenPy-LICENSE.txt")
     shutil.copyfile(ROOT / "Scripts" / "engine_main.py", base / "main.py")
+    return prototype
+
+
+def prepare(version, cache, *, legacy=False):
+    build = ROOT / ".build" / "project"
+    if build.exists():
+        shutil.rmtree(build)
+    prototype = prepare_runtime(version, cache, build)
+    base = prototype / "base"
     shutil.copytree(ROOT / "Demo", base / "Demo")
+    installed = [version]
+    legacy_namespaces = {}
+    if legacy:
+        compatibility = "8.5.3"
+        engine = prepare_runtime(compatibility, cache, build / "engines" / compatibility)
+        location = base / "Engines" / compatibility
+        location.mkdir(parents=True)
+        # The Renios launcher searches for base/main.py and base/lib relative
+        # to argv[0]. Give each runtime its own standard library and scripts.
+        shutil.move(engine / "base", location / "base")
+        installed.insert(0, compatibility)
+        legacy_namespaces[compatibility] = "R01"
     for source in (ROOT / "App").iterdir():
         if source.is_file():
             shutil.copyfile(source, prototype / source.name)
@@ -216,7 +234,8 @@ def prepare(version, cache):
             "UTTypeTagSpecification": {"public.filename-extension": ["apk"]},
         }],
         "ReniosEngineVersion": version,
-        "ReniosInstalledEngines": [version],
+        "ReniosInstalledEngines": installed,
+        "ReniosLegacyNamespaces": legacy_namespaces,
         "UISupportedInterfaceOrientations": [
             "UIInterfaceOrientationPortrait",
             "UIInterfaceOrientationLandscapeLeft",
@@ -250,5 +269,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("engine", choices=VERSIONS)
     parser.add_argument("--cache", type=Path, default=ROOT / ".build" / "downloads")
+    parser.add_argument("--legacy", action="store_true")
     arguments = parser.parse_args()
-    prepare(arguments.engine, arguments.cache)
+    if arguments.legacy and arguments.engine != "8.6.0":
+        parser.error("--legacy requires the SDL3 host")
+    prepare(arguments.engine, arguments.cache, legacy=arguments.legacy)

@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "Host.h"
+#include <dlfcn.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,30 @@ extern int SDL_RunApp(int, char **, int (*)(int, char **), void *);
 #else
 extern int SDL_UIKitRunApp(int, char **, int (*)(int, char **));
 #endif
+
+typedef int (*EngineMain)(int, char **);
+typedef int (*EnginePushEvent)(void *);
+typedef void (*LegacyEventPump)(int);
+
+static EnginePushEvent activePushEvent;
+static UIWindow *(*legacyWindowInit)(id, SEL, CGRect);
+static __weak UIWindowScene *legacyScene;
+
+static UIWindow *attachLegacyWindow(id window, SEL selector, CGRect frame) {
+    UIWindow *result = legacyWindowInit(window, selector, frame);
+    if (legacyScene) { result.windowScene = legacyScene; }
+    return result;
+}
+
+static UIWindowScene *currentScene(void) {
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if ([scene isKindOfClass:UIWindowScene.class] &&
+            [scene.session.role isEqualToString:UIWindowSceneSessionRoleApplication]) {
+            return (UIWindowScene *)scene;
+        }
+    }
+    return nil;
+}
 
 static BOOL probeEnabled;
 static Method keyboardMethod;
@@ -56,10 +81,64 @@ static void writeKeyboardProbe(void) {
     writeProbe(result, @"renios-keyboard.json");
 }
 
-int renios_play(const char *project, const char *saves, const char *orientation, int keyboardProbe) {
-    Class controller = NSClassFromString(@"SDL_uikitviewcontroller");
+int renios_play(const char *project, const char *saves, const char *engine, const char *orientation, int keyboardProbe) {
+    NSString *version = @(engine);
+    NSBundle *bundle = NSBundle.mainBundle;
+    NSDictionary *namespaces = [bundle objectForInfoDictionaryKey:@"ReniosLegacyNamespaces"];
+    NSString *prefix = namespaces[version];
+    NSString *executable = bundle.executablePath;
+    EngineMain entry = launcher_main;
+    EnginePushEvent push = SDL_PushEvent;
+    LegacyEventPump legacyEventPump = NULL;
+    Method windowInitializer = NULL;
+    IMP previousWindowInitializer = NULL;
+    NSString *controllerName = @"SDL_uikitviewcontroller";
+
+    if (prefix) {
+        NSString *name = [@"RenPy" stringByAppendingString:[version stringByReplacingOccurrencesOfString:@"." withString:@"_"]];
+        NSString *relative = [NSString stringWithFormat:@"%@.framework/%@", name, name];
+        NSString *framework = [bundle.privateFrameworksPath stringByAppendingPathComponent:relative];
+        void *handle = dlopen(framework.fileSystemRepresentation, RTLD_NOW | RTLD_LOCAL);
+        if (!handle) {
+            NSLog(@"Ren’Py %@ could not load: %s", version, dlerror());
+            return -3;
+        }
+        entry = (EngineMain)dlsym(handle, "launcher_main");
+        push = (EnginePushEvent)dlsym(handle, "SDL_PushEvent");
+        legacyEventPump = (LegacyEventPump)dlsym(handle, "SDL_iPhoneSetEventPump");
+        void (*mainReady)(void) = dlsym(handle, "SDL_SetMainReady");
+        if (!entry || !push || !legacyEventPump || !mainReady) { return -3; }
+
+        executable = [bundle.bundlePath stringByAppendingPathComponent:
+                      [NSString stringWithFormat:@"base/Engines/%@/main", version]];
+        legacyScene = currentScene();
+        controllerName = [prefix stringByAppendingString:@"_uikitviewcontroller"];
+        Class windowClass = NSClassFromString([prefix stringByAppendingString:@"_uikitwindow"]);
+        SEL selector = @selector(initWithFrame:);
+        Method initializer = windowClass ? class_getInstanceMethod(windowClass, selector) : NULL;
+        if (!initializer || !legacyScene) { return -3; }
+        IMP implementation = method_getImplementation(initializer);
+        if (implementation != (IMP)attachLegacyWindow) {
+            legacyWindowInit = (void *)implementation;
+            // Own this method on the private SDL subclass. Never edit UIWindow.
+            if (!class_addMethod(windowClass, selector, (IMP)attachLegacyWindow, method_getTypeEncoding(initializer))) {
+                windowInitializer = initializer;
+                previousWindowInitializer = method_setImplementation(initializer, (IMP)attachLegacyWindow);
+            }
+        }
+        mainReady();
+        legacyEventPump(1);
+    }
+
+    Class controller = NSClassFromString(controllerName);
     keyboardMethod = controller ? class_getInstanceMethod(controller, sel_registerName("updateKeyboard")) : NULL;
-    if (!keyboardMethod) { return -2; }
+    if (!keyboardMethod) {
+        if (legacyEventPump) { legacyEventPump(0); }
+        if (windowInitializer) { method_setImplementation(windowInitializer, previousWindowInitializer); }
+        legacyScene = nil;
+        return -2;
+    }
+    activePushEvent = push;
 
     probeEnabled = keyboardProbe != 0;
     originalKeyboardUpdate = method_setImplementation(keyboardMethod, (IMP)keepGameViewportInPlace);
@@ -86,19 +165,23 @@ int renios_play(const char *project, const char *saves, const char *orientation,
     setenv("RENPY_PLATFORM", "ios-arm64", 1);
     setenv("RENPY_DISABLE_FULLSCREEN", "1", 1);
     char *argv[] = {
-        (char *)NSBundle.mainBundle.executablePath.fileSystemRepresentation,
+        (char *)executable.fileSystemRepresentation,
         (char *)project, "--savedir", (char *)saves, NULL
     };
-    const char *hint = RENIOS_SDL3 ? "SDL_ORIENTATIONS" : "SDL_IOS_ORIENTATIONS";
+    const char *hint = (RENIOS_SDL3 && !prefix) ? "SDL_ORIENTATIONS" : "SDL_IOS_ORIENTATIONS";
     if (orientation[0]) { setenv(hint, orientation, 1); }
-    int status = launcher_main(4, argv);
+    int status = entry(4, argv);
+    activePushEvent = NULL;
+    if (legacyEventPump) { legacyEventPump(0); }
+    if (windowInitializer) { method_setImplementation(windowInitializer, previousWindowInitializer); }
+    legacyScene = nil;
     if (orientation[0]) { unsetenv(hint); }
 
     [quitProbe invalidate];
     if (probeEnabled) {
         const char *confirmed = getenv("RENIOS_QUIT_CONFIRMED");
         BOOL confirmationRan = confirmed && strcmp(confirmed, "1") == 0;
-        writeProbe(@{@"confirmed": confirmationRan ? @YES : @NO, @"exitStatus": @(status)},
+        writeProbe(@{@"confirmed": confirmationRan ? @YES : @NO, @"exitStatus": @(status), @"engine": version},
                    @"renios-quit.json");
         unsetenv("RENIOS_QUIT_CONFIRMED");
         unsetenv("RENIOS_KEYBOARD_PROBE");
@@ -118,7 +201,7 @@ void renios_request_quit(void) {
         uint64_t storage[32];
     } event = {0};
     event.type = 0x100;
-    SDL_PushEvent(&event);
+    if (activePushEvent) { activePushEvent(&event); }
 }
 
 static int showLibrary(int argc, char **argv) {

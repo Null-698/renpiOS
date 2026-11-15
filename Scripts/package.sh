@@ -7,6 +7,9 @@ xcodebuild -project "$project" -scheme prototype -configuration Release \
   -destination 'generic/platform=iOS' -derivedDataPath "$PWD/.build/device" \
   CODE_SIGNING_ALLOWED=NO ARCHS=arm64 build | tee out/diagnostics/device-build.log
 app="$PWD/.build/device/Build/Products/Release-iphoneos/reniOS.app"
+if [[ -d .build/project/engines ]]; then
+  python3 Scripts/embed-engine.py "$app" iphoneos
+fi
 staging=$(mktemp -d)
 trap 'rm -rf -- "$staging"' EXIT
 mkdir "$staging/Payload"

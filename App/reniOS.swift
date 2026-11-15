@@ -36,14 +36,16 @@ final class Session {
     }
 
     func run() {
-        if ProcessInfo.processInfo.arguments.contains("--keyboard-probe") {
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--keyboard-probe") {
+            let probeEngine = ProcessInfo.processInfo.arguments.dropFirst(index + 1).first
             do {
                 #if DEBUG
                 let result = ["importsAndSaves": try LibraryStore.checkImportsAndSaves()]
                 let output = URL.cachesDirectory.appending(path: "renios-library.json")
                 try JSONEncoder().encode(result).write(to: output, options: .atomic)
                 #endif
-                let demo = try LibraryStore.installDemo()
+                var demo = try LibraryStore.installDemo()
+                demo.engineOverride = probeEngine
                 try play(demo, probe: true)
             } catch {
                 NSLog("Renios probe: %@", error.localizedDescription)
@@ -132,7 +134,7 @@ final class Session {
     }
 
     private func play(_ novel: Novel, probe: Bool = false) throws {
-        guard Self.engine(for: novel) == Self.engine else {
+        guard let version = Self.engine(for: novel) else {
             message = "This game needs a different Ren’Py engine."
             return
         }
@@ -142,8 +144,10 @@ final class Session {
         defer { overlay?.isHidden = true }
         let result = novel.root.path.withCString { game in
             novel.saves.path.withCString { saves in
-                (novel.orientation?.sdlHint ?? "").withCString { hint in
-                    renios_play(game, saves, hint, probe ? 1 : 0)
+                version.withCString { engine in
+                    (novel.orientation?.sdlHint ?? "").withCString { hint in
+                        renios_play(game, saves, engine, hint, probe ? 1 : 0)
+                    }
                 }
             }
         }
@@ -284,7 +288,7 @@ private struct LibraryScreen: View {
             HStack {
                 Text(session.novels.count == 1 ? "1 story" : "\(session.novels.count) stories")
                 Spacer()
-                Text("Ren’Py \(Session.engine)").fontDesign(.monospaced)
+                Text("\(Session.installedEngines.count) Ren’Py engines").fontDesign(.monospaced)
             }
             .font(.footnote.weight(.medium))
             .foregroundStyle(.secondary)

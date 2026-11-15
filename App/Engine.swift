@@ -35,7 +35,7 @@ struct EngineVersion: Comparable, Equatable {
         let contents = String(decoding: data, as: UTF8.self)
         let dotted = #"([0-9]{1,2}\.[0-9]{1,3}\.[0-9]{1,3})(?:\.[0-9]{1,12})?"#
         if filename.hasSuffix(".py") {
-            let assignment = #"(?m)^\s*(?:version|version_only)\s*=\s*['"](?:Ren['’]Py\s+)?"# + dotted + #"['"]"#
+            let assignment = #"(?m)^\s*(?:version|version_only)\s*=\s*[uU]?['"](?:Ren['’]Py\s+)?"# + dotted + #"['"]"#
             if let found = match(assignment, in: contents) { return found }
             let tuple = #"(?m)^\s*version_tuple\s*=\s*(?:VersionTuple\s*)?\(\s*([0-9]{1,2})\s*,\s*([0-9]{1,3})\s*,\s*([0-9]{1,3})\s*[,\)]"#
             return match(tuple, in: contents)

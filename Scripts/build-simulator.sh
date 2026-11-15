@@ -8,3 +8,7 @@ xcodebuild -project "$project" -scheme prototype -configuration Debug \
   CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES build \
   | tee out/diagnostics/simulator-build.log
 
+if [[ -d .build/project/engines ]]; then
+  app="$PWD/.build/simulator/Build/Products/Debug-iphonesimulator/reniOS.app"
+  python3 Scripts/embed-engine.py "$app" iphonesimulator
+fi

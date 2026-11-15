@@ -67,39 +67,49 @@ defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool NO
 bounded 150 xcrun simctl boot "$udid"
 bounded 240 xcrun simctl bootstatus "$udid" -b
 bounded 150 xcrun simctl install "$udid" "$app"
-bounded 150 xcrun simctl launch "$udid" "$bundle" --keyboard-probe
 data=$(xcrun simctl get_app_container "$udid" "$bundle" data)
-probe="$data/Library/Caches/renios-keyboard.json"
-for ((attempt=0; attempt<75; attempt++)); do
-  [[ ! -s "$probe" ]] || break
-  sleep 1
-done
-if [[ ! -s "$probe" ]]; then
-  echo "Ren’Py did not report an on-screen keyboard within 75 seconds." >&2
-  exit 1
-fi
-cp "$data/Library/Caches/renios-library.json" out/library-probe.json
-cat out/library-probe.json
-jq -e '.importsAndSaves == true' out/library-probe.json
-cp "$probe" out/keyboard-probe.json
-cat out/keyboard-probe.json
-jq -e '.keyboardVisible == true and .viewportStable == true' out/keyboard-probe.json
-if ! bounded 45 xcrun simctl io "$udid" screenshot out/keyboard.png; then
-  echo "::warning::Keyboard screenshot unavailable"
-fi
 
-# Ask the running host to invoke the Close button’s native action, then
-# require the demo's confirmation screen and a clean return from Ren'Py.
-touch "$data/Library/Caches/renios-quit.request"
-quit="$data/Library/Caches/renios-quit.json"
-for ((attempt=0; attempt<75; attempt++)); do
-  [[ ! -s "$quit" ]] || break
-  sleep 1
-done
-if [[ ! -s "$quit" ]]; then
-  echo "Ren’Py did not return from the Close action within 75 seconds." >&2
-  exit 1
-fi
-cp "$quit" out/quit-probe.json
-cat out/quit-probe.json
-jq -e '.confirmed == true and .exitStatus == 0' out/quit-probe.json
+probe_playback() {
+  local engine=$1
+  local suffix=$2
+  bounded 25 xcrun simctl terminate "$udid" "$bundle" >/dev/null 2>&1 || true
+  rm -f "$data"/Library/Caches/renios-{library.json,keyboard.json,quit.json,quit.request}
+  bounded 150 xcrun simctl launch "$udid" "$bundle" --keyboard-probe "$engine"
+  probe="$data/Library/Caches/renios-keyboard.json"
+  for ((attempt=0; attempt<75; attempt++)); do
+    [[ ! -s "$probe" ]] || break
+    sleep 1
+  done
+  if [[ ! -s "$probe" ]]; then
+    echo "Ren’Py did not report an on-screen keyboard within 75 seconds." >&2
+    exit 1
+  fi
+  cp "$data/Library/Caches/renios-library.json" "out/library-probe${suffix}.json"
+  cat "out/library-probe${suffix}.json"
+  jq -e '.importsAndSaves == true' "out/library-probe${suffix}.json"
+  cp "$probe" "out/keyboard-probe${suffix}.json"
+  cat "out/keyboard-probe${suffix}.json"
+  jq -e '.keyboardVisible == true and .viewportStable == true' "out/keyboard-probe${suffix}.json"
+  if [[ -z "$suffix" ]] && ! bounded 12 xcrun simctl io "$udid" screenshot out/keyboard.png; then
+    echo "::warning::Keyboard screenshot unavailable"
+  fi
+
+  # Ask the running host to invoke the Close button’s native action, then
+  # require the demo's confirmation screen and a clean return from Ren'Py.
+  touch "$data/Library/Caches/renios-quit.request"
+  quit="$data/Library/Caches/renios-quit.json"
+  for ((attempt=0; attempt<75; attempt++)); do
+    [[ ! -s "$quit" ]] || break
+    sleep 1
+  done
+  if [[ ! -s "$quit" ]]; then
+    echo "Ren’Py did not return from the Close action within 75 seconds." >&2
+    exit 1
+  fi
+  cp "$quit" "out/quit-probe${suffix}.json"
+  cat "out/quit-probe${suffix}.json"
+  jq -e --arg engine "$engine" '.confirmed == true and .exitStatus == 0 and .engine == $engine' "out/quit-probe${suffix}.json"
+}
+
+probe_playback 8.6.0 ""
+probe_playback 8.5.3 "-8.5.3"

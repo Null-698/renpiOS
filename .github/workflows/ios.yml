@@ -20,8 +20,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
-      - name: Prepare Ren’Py 8.6.0
-        run: python3 Scripts/prepare.py 8.6.0
+      - name: Prepare bundled Ren’Py engines
+        run: python3 Scripts/prepare.py 8.6.0 --legacy
       - name: Build unsigned iPhone archive
         run: bash Scripts/package.sh
       - name: Upload iPhone IPA
@@ -76,9 +76,9 @@ jobs:
         with:
           name: keyboard-iOS-${{ matrix.os }}
           path: |
-            out/library-probe.json
+            out/library-probe*.json
             out/keyboard.png
-            out/keyboard-probe.json
-            out/quit-probe.json
+            out/keyboard-probe*.json
+            out/quit-probe*.json
             out/diagnostics/
           if-no-files-found: ignore
