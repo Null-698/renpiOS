@@ -83,10 +83,8 @@ def embed(version, namespace, app, sdk):
         command.extend(["-framework", system])
     shim = Path(__file__).with_name("legacy-sdl.c")
     runtime = Path(__file__).resolve().parents[1] / "App" / "Runtime.c"
-    series = python_libraries[0].stem.removeprefix("libpython")
-    python_defines = [f"-DRENIOS_PY2={int(series.startswith('2.'))}",
-                      f'-DRENIOS_PYTHON_SERIES="{series}"',
-                      f'-DRENIOS_PYTHON_DIGITS="{series.replace(".", "")}"']
+    major, minor = python_libraries[0].stem.removeprefix("libpython").split(".")
+    python_defines = [f"-DRENIOS_PY2={int(major == '2')}", f"-DRENIOS_PY_MINOR={minor}"]
     subprocess.run([*command, *python_defines, str(shim), str(runtime), *ldflags,
                     "-o", str(framework / name)], check=True)
     (framework / "Info.plist").write_bytes(plistlib.dumps({

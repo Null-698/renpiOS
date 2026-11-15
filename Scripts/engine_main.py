@@ -1,6 +1,7 @@
 """Run a project in an initialized Ren'Py interpreter."""
 import os
 import sys
+from types import ModuleType
 
 initialized = False
 entry = None
@@ -17,6 +18,10 @@ def finish(renpy):
         callback()
     renpy.session.pop("_keep_renderer", None)
     renpy.reload_all()
+    # The renderer releases its GL resources. The pygame layer owns the
+    # actual SDL window and must release it before the library becomes active.
+    import pygame_sdl2
+    pygame_sdl2.display.quit()
     renpy.session.clear()
     usable = True
 
@@ -72,6 +77,15 @@ def play():
                 os.environ[key] = value
         for name in set(sys.modules) - original_modules:
             module = sys.modules.get(name)
-            filename = getattr(module, "__file__", None)
-            if filename and os.path.realpath(filename).startswith(project + os.sep):
+            if not isinstance(module, ModuleType):
+                continue
+            attributes = vars(module)
+            paths = list(attributes.get("__path__") or ())
+            filename = attributes.get("__file__")
+            if filename:
+                paths.append(filename)
+            loader = attributes.get("__loader__")
+            game_loader = type(loader).__module__ in ("renpy.loader", "renpy.importer")
+            if game_loader or any(p.startswith("$game/") or os.path.realpath(p).startswith(project + os.sep)
+                                  for p in paths):
                 sys.modules.pop(name, None)

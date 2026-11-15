@@ -136,6 +136,10 @@ probe_playback() {
 }
 
 failed=()
+if ! probe_playback engine-switch false 8.6.0 7.4.11 8.6.0; then
+  failed+=(engine-switch)
+  tail -60 out/diagnostics/engine-switch-stderr.log || true
+fi
 while IFS= read -r engine; do
   rotation=false
   if [[ "$engine" == 8.6.0 || "$engine" == 7.4.11 ]]; then
@@ -158,10 +162,6 @@ for version in priority + [v for v in available if v not in priority]:
     print(version)
 PYTHON
 )
-if ! probe_playback engine-switch false 8.6.0 7.4.11 8.6.0; then
-  failed+=(engine-switch)
-  tail -60 out/diagnostics/engine-switch-stderr.log || true
-fi
 if ((${#failed[@]})); then
   echo "Failed playback checks: ${failed[*]}" >&2
   exit 1

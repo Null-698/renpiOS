@@ -16,6 +16,8 @@ extern int PyRun_SimpleString(const char *);
 extern int Py_IgnoreEnvironmentFlag;
 extern int Py_NoUserSiteDirectory;
 #define RUN_GAME "import renios_runtime; renios_runtime.play()"
+#define STRINGIFY_VALUE(value) #value
+#define STRINGIFY(value) STRINGIFY_VALUE(value)
 #if RENIOS_PY2
 extern int Py_OptimizeFlag;
 extern void Py_SetProgramName(char *);
@@ -46,7 +48,7 @@ static int startPython(const char *base, const char *script) {
 #else
     char *path = NULL;
     if (asprintf(&path, "%s/lib/python%s:%s/lib/python%s.zip:%s", base,
-                 RENIOS_PYTHON_SERIES, base, RENIOS_PYTHON_DIGITS, base) < 0) {
+                 "3." STRINGIFY(RENIOS_PY_MINOR), base, "3" STRINGIFY(RENIOS_PY_MINOR), base) < 0) {
         return -1;
     }
     Py_UTF8Mode = 1;

@@ -127,7 +127,7 @@ def insert_after(text, marker, addition):
 
 def configure_project(project, version):
     config = project.read_text()
-    series = python_series(version)
+    major, minor = python_series(version).split(".")
     config = config.replace("main.c", "Host.m").replace("sourcecode.c.c; path = Host.m", "sourcecode.c.objc; path = Host.m")
     config = re.sub(r"IPHONEOS_DEPLOYMENT_TARGET = [\d.]+;", "IPHONEOS_DEPLOYMENT_TARGET = 26.0;", config)
     config = re.sub(r"\n\s*(?:DEVELOPMENT_TEAM|DevelopmentTeam|SWIFT_VERSION) = [^;]+;", "", config)
@@ -144,8 +144,7 @@ def configure_project(project, version):
         'USER_HEADER_SEARCH_PATHS = "";',
         'USER_HEADER_SEARCH_PATHS = "";\n'
         f'\t\t\t\tGCC_PREPROCESSOR_DEFINITIONS = ("$(inherited)", "RENIOS_SDL3={int(version == "8.6.0")}", '
-        f'"RENIOS_PY2={int(series.startswith("2."))}", '
-        f'"RENIOS_PYTHON_SERIES=\\\"{series}\\\"", "RENIOS_PYTHON_DIGITS=\\\"{series.replace(".", "")}\\\"");\n'
+        f'"RENIOS_PY2={int(major == "2")}", "RENIOS_PY_MINOR={minor}");\n'
         '\t\t\t\tSWIFT_VERSION = 5.0;\n'
         '\t\t\t\tSWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/Host.h";'
     )
