@@ -13,8 +13,12 @@ extern int SDL_PushEvent(void *event);
 #if RENIOS_SDL3
 extern void *SDL_GetKeyboardFocus(void);
 extern bool SDL_StopTextInput(void *window);
+extern bool SDL_StartTextInput(void *window);
+extern bool SDL_TextInputActive(void *window);
 extern int SDL_RunApp(int, char **, int (*)(int, char **), void *);
 #else
+extern int SDL_IsTextInputActive(void);
+extern void SDL_StartTextInput(void);
 extern void SDL_StopTextInput(void);
 extern int SDL_UIKitRunApp(int, char **, int (*)(int, char **));
 #endif
@@ -24,14 +28,24 @@ typedef int (*EnginePushEvent)(void *);
 typedef void (*LegacyEventPump)(int);
 
 static EnginePushEvent activePushEvent;
-static void (*activeDismissKeyboard)(void);
+static int (*activeToggleKeyboard)(void);
 
-static void dismissDefaultKeyboard(void) {
+static int toggleDefaultKeyboard(void) {
 #if RENIOS_SDL3
     void *window = SDL_GetKeyboardFocus();
-    if (window) { SDL_StopTextInput(window); }
+    if (!window) { return 0; }
+    if (SDL_TextInputActive(window)) {
+        SDL_StopTextInput(window);
+        return 0;
+    }
+    return SDL_StartTextInput(window);
 #else
-    SDL_StopTextInput();
+    if (SDL_IsTextInputActive()) {
+        SDL_StopTextInput();
+        return 0;
+    }
+    SDL_StartTextInput();
+    return 1;
 #endif
 }
 static UIWindow *(*legacyWindowInit)(id, SEL, CGRect);
@@ -107,7 +121,7 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
     EngineMain entry = launcher_main;
     EnginePushEvent push = SDL_PushEvent;
     LegacyEventPump legacyEventPump = NULL;
-    void (*dismissKeyboard)(void) = dismissDefaultKeyboard;
+    int (*toggleKeyboard)(void) = toggleDefaultKeyboard;
     Method windowInitializer = NULL;
     IMP previousWindowInitializer = NULL;
     NSString *controllerName = @"SDL_uikitviewcontroller";
@@ -125,7 +139,7 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
         entry = (EngineMain)dlsym(handle, "launcher_main");
         push = (EnginePushEvent)dlsym(handle, "SDL_PushEvent");
         legacyEventPump = (LegacyEventPump)dlsym(handle, "renios_legacy_set_event_pump");
-        dismissKeyboard = dlsym(handle, "renios_legacy_dismiss_keyboard");
+        toggleKeyboard = dlsym(handle, "renios_legacy_toggle_keyboard");
         void (*mainReady)(void) = dlsym(handle, "SDL_SetMainReady");
         if (!entry || !push || !legacyEventPump || !mainReady) {
             NSLog(@"Ren’Py %@ is missing a runtime entry point", version);
@@ -166,7 +180,7 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
         return -2;
     }
     activePushEvent = push;
-    activeDismissKeyboard = dismissKeyboard;
+    activeToggleKeyboard = toggleKeyboard;
 
     probeEnabled = keyboardProbe != 0;
     originalKeyboardUpdate = method_setImplementation(keyboardMethod, (IMP)keepGameViewportInPlace);
@@ -229,7 +243,7 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
     int status = entry(4, argv);
     if (prefix) { NSLog(@"Ren’Py %@ returned %d", version, status); }
     activePushEvent = NULL;
-    activeDismissKeyboard = NULL;
+    activeToggleKeyboard = NULL;
     if (legacyEventPump) { legacyEventPump(0); }
     if (windowInitializer) { method_setImplementation(windowInitializer, previousWindowInitializer); }
     legacyScene = nil;
@@ -259,8 +273,8 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
     return status;
 }
 
-void renios_dismiss_keyboard(void) {
-    if (activeDismissKeyboard) { activeDismissKeyboard(); }
+void renios_toggle_keyboard(void) {
+    if (activeToggleKeyboard && activeToggleKeyboard()) { return; }
     for (UIWindow *window in currentScene().windows) { [window endEditing:YES]; }
 }
 

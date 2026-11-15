@@ -187,12 +187,12 @@ final class Session {
         close.translatesAutoresizingMaskIntoConstraints = false
         close.addAction(UIAction { _ in renios_request_quit() }, for: .touchUpInside)
         let keyboard = UIButton(type: .system)
-        style.image = UIImage(systemName: "keyboard.chevron.compact.down")
+        style.image = UIImage(systemName: "keyboard")
         keyboard.configuration = style
         keyboard.tintColor = .white
-        keyboard.accessibilityLabel = "Dismiss Keyboard"
+        keyboard.accessibilityLabel = "Show or Hide Keyboard"
         keyboard.translatesAutoresizingMaskIntoConstraints = false
-        keyboard.addAction(UIAction { _ in renios_dismiss_keyboard() }, for: .touchUpInside)
+        keyboard.addAction(UIAction { _ in renios_toggle_keyboard() }, for: .touchUpInside)
         container.view.addSubview(close)
         container.view.addSubview(keyboard)
         NSLayoutConstraint.activate([

@@ -10,7 +10,7 @@ SDK_SETTINGS = {
     "iphonesimulator": ("arm64-apple-ios26.0-simulator", "debug"),
 }
 ENTRY_POINTS = ("launcher_main", "SDL_SetMainReady", "SDL_PushEvent", "renios_legacy_set_event_pump",
-                "renios_legacy_dismiss_keyboard")
+                "renios_legacy_toggle_keyboard")
 
 
 def isolate_sdl(source, output, namespace):
@@ -46,6 +46,14 @@ def embed(version, namespace, app, sdk):
     isolated.parent.mkdir(parents=True, exist_ok=True)
     arm_archive = isolated.with_name("SDL2-arm64.a")
     source = archives / isolated.name
+    # The 7.4.11 pack predates the Metal-backed UIKit renderer. The next
+    # pinned SDL2 build preserves the engine ABI and uses the bundled ANGLE.
+    use_metal = "MetalANGLE.xcframework" in project
+    if version == "7.4.11":
+        metal_sdl = work.parent / "7.5.3" / "renios" / "prototype" / "prebuilt" / configuration / isolated.name
+        if metal_sdl.is_file():
+            source = metal_sdl
+            use_metal = True
     architectures = subprocess.check_output(["xcrun", "lipo", "-archs", str(source)], text=True).split()
     if len(architectures) > 1:
         subprocess.run(["xcrun", "lipo", "-thin", "arm64", str(source), "-output", str(arm_archive)], check=True)
@@ -69,7 +77,7 @@ def embed(version, namespace, app, sdk):
     systems = set(re.findall(r"path = System/Library/Frameworks/([A-Za-z0-9]+)\.framework", project))
     # SDL2 directly references AVAudioSession and the fixed-function GLES renderer.
     systems.update(("AVFoundation", "OpenGLES"))
-    if "MetalANGLE.xcframework" in project:
+    if use_metal:
         systems.add("MetalANGLE")
     for system in sorted(systems):
         command.extend(["-framework", system])

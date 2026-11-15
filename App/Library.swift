@@ -533,6 +533,8 @@ enum LibraryStore {
         // Use RAPT’s private.mp3 layout for the Android fixture.
         let privateData = Data(base64Encoded: "H4sIAAAAAAACA+3RsQrCMBSF4Tv7FNm6xZs0TVx8FhHp0KWW1Bb69qYiCM4ihf7fci5nOcPNbT8sx/l2mds8dvfeDov8mhYxhFcW36lah8+99s5FH8Wo/ME0Pq65zMs+vd9uzmaqkj3ZZH2jtUvqq4MAAAAAAAAAAAAAAAAAADbrCUT0DV0AKAAA")!
         try privateData.write(to: android.appending(path: "assets/private.mp3"))
+        try Data(base64Encoded: "AwAIAOgAAAABABwAcAAAAAUAAAAAAAAAAAEAADAAAAAAAAAAAAAAAAsAAAAVAAAAKQAAADcAAAAICG1hbmlmZXN0AAcHcGFja2FnZQAREWNvbS5leGFtcGxlLm5vdmVsAAsLYXBwbGljYXRpb24ABQVsYWJlbAAAAgEQADgAAAABAAAA//////////8AAAAAFAAUAAEAAAAAAAAA/////wEAAAACAAAACAAAAwIAAAACARAAOAAAAAEAAAD//////////wMAAAAUABQAAQAAAAAAAAD/////BAAAAP////8IAAABAAAFfw==")!.write(to: android.appending(path: "AndroidManifest.xml"))
+        try Data(base64Encoded: "AgAMAIwBAAABAAAAAQAcADQAAAABAAAAAAAAAAABAAAgAAAAAAAAAAAAAAAREVRoZSBBbmRyb2lkIE5vdmVsAAACIAFMAQAAfwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAECGAAsAAAABQAAAAEAAAAcAAAABAAAAAAAAAAIAAAAAAAAAAgAAAMAAAAA")!.write(to: android.appending(path: "resources.arsc"))
         let apk = fixtures.appending(path: "novel.apk")
         try fm.zipItem(at: android, to: apk, shouldKeepParent: false)
         let mobile = try install(apk)
@@ -541,6 +543,7 @@ enum LibraryStore {
         guard novel.title == "The Sample Novel", novel.root.lastPathComponent.hasPrefix(novel.title),
               novel.saves.lastPathComponent.hasPrefix(novel.title),
               novel.detectedEngine == "8.3.4", mobile.detectedEngine == "7.8.7",
+              mobile.title == "The Android Novel", mobile.saveIdentity == "com.example.novel",
               fm.fileExists(atPath: mobile.root.appending(path: "game/script.rpy").path),
               EngineVersion.choose(for: novel.detectedEngine, from: ["8.3.4", "8.3.7", "8.6.0"], default: "8.6.0") == "8.3.4",
               EngineVersion.choose(for: mobile.detectedEngine, from: ["8.6.0"], default: "8.6.0") == nil else {
