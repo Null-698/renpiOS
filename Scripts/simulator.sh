@@ -112,4 +112,16 @@ probe_playback() {
 }
 
 probe_playback 8.6.0 ""
-probe_playback 8.5.3 "-8.5.3"
+while IFS= read -r engine; do
+  probe_playback "$engine" "-$engine"
+done < <(python3 - "$app/Info.plist" <<'PYTHON'
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as stream:
+    info = plistlib.load(stream)
+for version in info["ReniosInstalledEngines"]:
+    if version != info["ReniosEngineVersion"]:
+        print(version)
+PYTHON
+)

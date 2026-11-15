@@ -1,5 +1,6 @@
 import Foundation
 import ZIPFoundation
+import zlib
 
 struct Novel: Codable, Identifiable, Equatable, Sendable {
     let id: UUID
@@ -179,14 +180,16 @@ enum LibraryStore {
         }
 
         let android = fixtures.appending(path: "android")
-        try add("version = '7.8.8.25010101'", at: "assets/x-renpy/x-vc_version.py", in: android)
         try add("label start:\n    return", at: "assets/x-game/x-script.rpy", in: android)
+        // A Renios-compatible Android fixture uses the upstream private.mp3 layout.
+        let privateData = Data(base64Encoded: "H4sIAAAAAAACA+3RsQrCMBSF4Tv7FNm6xZs0TVx8FhHp0KWW1Bb69qYiCM4ihf7fci5nOcPNbT8sx/l2mds8dvfeDov8mhYxhFcW36lah8+99s5FH8Wo/ME0Pq65zMs+vd9uzmaqkj3ZZH2jtUvqq4MAAAAAAAAAAAAAAAAAADbrCUT0DV0AKAAA")!
+        try privateData.write(to: android.appending(path: "assets/private.mp3"))
         let apk = fixtures.appending(path: "novel.apk")
         try fm.zipItem(at: android, to: apk, shouldKeepParent: false)
         let mobile = try install(apk)
         defer { try? delete(mobile) }
 
-        guard novel.detectedEngine == "8.3.4", mobile.detectedEngine == "7.8.8",
+        guard novel.detectedEngine == "8.3.4", mobile.detectedEngine == "7.8.7",
               fm.fileExists(atPath: mobile.root.appending(path: "game/script.rpy").path),
               EngineVersion.choose(for: novel.detectedEngine, from: ["8.3.4", "8.3.7", "8.6.0"], default: "8.6.0") == "8.3.4",
               EngineVersion.choose(for: mobile.detectedEngine, from: ["8.6.0"], default: "8.6.0") == nil else {
@@ -262,6 +265,51 @@ enum LibraryStore {
         return nil
     }
 
+    private static func detectInAndroidPrivateData(_ archive: Archive, entries: [(Entry, [String])]) -> String? {
+        let limit = 96 * 1024 * 1024
+        guard let (entry, _) = entries.first(where: { $0.1 == ["assets", "private.mp3"] }),
+              UInt64(entry.uncompressedSize) <= UInt64(limit) else { return nil }
+        let temporary = URL.temporaryDirectory.appending(path: "reniOS-\(UUID().uuidString).tar.gz")
+        defer { try? fm.removeItem(at: temporary) }
+        guard (try? archive.extract(entry, to: temporary)) != nil,
+              let stream = gzopen(temporary.path, "rb") else { return nil }
+        defer { gzclose(stream) }
+
+        func read(_ count: Int) -> Data? {
+            var data = Data(count: count)
+            let bytes = data.withUnsafeMutableBytes { (buffer: UnsafeMutableRawBufferPointer) in
+                gzread(stream, buffer.baseAddress, UInt32(count))
+            }
+            return bytes == Int32(count) ? data : nil
+        }
+        func string(_ field: Data.SubSequence) -> String {
+            String(decoding: field.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        var metadata: [String: String] = [:]
+        var position = 0
+        while position + 512 <= limit, let header = read(512), header.contains(where: { $0 != 0 }) {
+            position += 512
+            let sizeString = string(header[124..<136]).trimmingCharacters(in: .whitespaces)
+            guard let size = Int(sizeString, radix: 8), size >= 0, size <= limit - position else { break }
+            let next = position + (size + 511) / 512 * 512
+            guard next <= limit else { break }
+
+            let name = string(header[0..<100])
+            let prefix = string(header[345..<500])
+            let path = prefix.isEmpty ? name : prefix + "/" + name
+            let parts = path.split(separator: "/").map(String.init)
+            if (header[156] == 0 || header[156] == 48), size > 0, size <= metadataLimit,
+               Array(parts.dropLast()) == ["renpy"], let filename = parts.last, EngineVersion.metadata.contains(filename),
+               let data = read(size), let version = EngineVersion.detect(in: data, filename: filename) {
+                metadata[filename] = version
+                if filename == "vc_version.py" { return version }
+            }
+            guard gzseek(stream, z_off_t(next), SEEK_SET) == z_off_t(next) else { break }
+            position = next
+        }
+        return EngineVersion.metadata.compactMap { metadata[$0] }.first
+    }
+
     private static func importArchive(_ source: URL, into destination: URL) throws -> String? {
         let archive = try Archive(url: source, accessMode: .read)
         let isAPK = source.pathExtension.lowercased() == "apk"
@@ -313,7 +361,9 @@ enum LibraryStore {
             try fm.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
             _ = try archive.extract(entry, to: output)
         }
-        return detectInArchive(archive, entries: entries, project: Array(prefix.dropLast()), android: isAPK)
+        let detected = detectInArchive(archive, entries: entries, project: Array(prefix.dropLast()), android: isAPK)
+        if let detected { return detected }
+        return isAPK ? detectInAndroidPrivateData(archive, entries: entries) : nil
     }
 
     private static func importDirectory(_ source: URL, into destination: URL) throws {

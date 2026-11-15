@@ -33,11 +33,25 @@ def embed(version, namespace, app, sdk):
     project = (prototype / "prototype.xcodeproj" / "project.pbxproj").read_text()
     ldflags = re.findall(r'"(-l[^"]+)"', re.findall(r"OTHER_LDFLAGS = \(([^)]*)\);", project)[-1])
     archives = prototype / "prebuilt" / configuration
+    python_libraries = list(archives.glob("libpython*.a"))
+    if len(python_libraries) != 1:
+        raise ValueError(f"Expected one Python ABI in Ren’Py {version}")
+    # Several Ren’Py 7 packs list the Ren’Py 8 library in the shared template.
+    python_flag = "-l" + python_libraries[0].name.removeprefix("lib").removesuffix(".a")
+    ldflags = [python_flag if flag.startswith("-lpython") else flag for flag in ldflags]
     if "-lSDL2" not in ldflags:
         raise ValueError(f"Expected SDL2 in Ren’Py {version}")
     isolated = work / sdk / "libSDL2.a"
-    isolate_sdl(archives / isolated.name, isolated, namespace.encode("ascii"))
+    isolated.parent.mkdir(parents=True, exist_ok=True)
+    arm_archive = isolated.with_name("SDL2-arm64.a")
+    source = archives / isolated.name
+    architectures = subprocess.check_output(["xcrun", "lipo", "-archs", str(source)], text=True).split()
+    if len(architectures) > 1:
+        subprocess.run(["xcrun", "lipo", "-thin", "arm64", str(source), "-output", str(arm_archive)], check=True)
+        source = arm_archive
+    isolate_sdl(source, isolated, namespace.encode("ascii"))
     subprocess.run(["xcrun", "ranlib", str(isolated)], check=True)
+    arm_archive.unlink(missing_ok=True)
     ldflags = [str(isolated) if flag == "-lSDL2" else "-lc++" if flag == "-lstdc++" else flag for flag in ldflags]
     name = "RenPy" + version.replace(".", "_")
     framework = app / "Frameworks" / f"{name}.framework"
@@ -51,8 +65,12 @@ def embed(version, namespace, app, sdk):
     for symbol in ENTRY_POINTS:
         command.extend(["-Xlinker", "-u", "-Xlinker", f"_{symbol}",
                         "-Xlinker", "-exported_symbol", "-Xlinker", f"_{symbol}"])
-    for system in ("MetalANGLE", "UIKit", "Foundation", "CoreGraphics", "AudioToolbox", "QuartzCore",
-                   "ImageIO", "CoreServices", "GameController", "CoreMotion", "CoreBluetooth", "CoreHaptics"):
+    systems = set(re.findall(r"path = System/Library/Frameworks/([A-Za-z0-9]+)\.framework", project))
+    # SDL2 directly references AVAudioSession and the fixed-function GLES renderer.
+    systems.update(("AVFoundation", "OpenGLES"))
+    if "MetalANGLE.xcframework" in project:
+        systems.add("MetalANGLE")
+    for system in sorted(systems):
         command.extend(["-framework", system])
     subprocess.run([*command, *ldflags, "-o", str(framework / name)], check=True)
     (framework / "Info.plist").write_bytes(plistlib.dumps({
@@ -72,4 +90,7 @@ if __name__ == "__main__":
     parser.add_argument("app", type=Path)
     parser.add_argument("sdk", choices=SDK_SETTINGS)
     args = parser.parse_args()
-    embed("8.5.3", "R01", args.app, args.sdk)
+    info = plistlib.loads((args.app / "Info.plist").read_bytes())
+    for version, namespace in info["ReniosLegacyNamespaces"].items():
+        print(f"Linking Ren’Py {version} for {args.sdk}", flush=True)
+        embed(version, namespace, args.app, args.sdk)

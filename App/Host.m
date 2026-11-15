@@ -98,7 +98,7 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
         NSString *name = [@"RenPy" stringByAppendingString:[version stringByReplacingOccurrencesOfString:@"." withString:@"_"]];
         NSString *relative = [NSString stringWithFormat:@"%@.framework/%@", name, name];
         NSString *framework = [bundle.privateFrameworksPath stringByAppendingPathComponent:relative];
-        void *handle = dlopen(framework.fileSystemRepresentation, RTLD_NOW | RTLD_LOCAL);
+        void *handle = dlopen(framework.fileSystemRepresentation, RTLD_NOW | RTLD_LOCAL | RTLD_FIRST);
         if (!handle) {
             NSLog(@"Ren’Py %@ could not load: %s", version, dlerror());
             return -3;
