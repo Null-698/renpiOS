@@ -103,7 +103,7 @@ probe_playback() {
     echo "::warning::Keyboard screenshot unavailable"
   fi
 
-  if [[ -z "$suffix" ]]; then
+  if [[ -z "$suffix" || "$engine" == "7.4.11" ]]; then
     local controls="$data/Library/Caches/renios-controls.json"
     touch "$data/Library/Caches/renios-controls.request" || return
     for ((attempt=0; attempt<150; attempt++)); do
@@ -111,10 +111,22 @@ probe_playback() {
       sleep 1
     done
     if [[ -s "$controls" ]]; then
-      cp "$controls" out/controls-probe.json || return
-      cat out/controls-probe.json
-      jq -e '.keyboardStayedHidden and .keyboardReopened and .rotated and .viewportFillsWindow and .drawableMatchesViewport' \
-        out/controls-probe.json || check_status=1
+      local result="out/controls-probe${suffix}.json"
+      cp "$controls" "$result" || return
+      cat "$result"
+      jq -e '.rotated and .viewportFillsWindow and .drawableMatchesViewport' "$result" || check_status=1
+      if [[ -z "$suffix" ]]; then
+        jq -e '.keyboardStayedHidden and .keyboardReopened' "$result" || check_status=1
+      else
+        # Verify the engine recomputed its viewport for the rotated drawable.
+        # The window/view measurements alone cannot establish that.
+        local drawable
+        drawable=$(jq -r '.drawableSize' "$result" | tr '{}' '()')
+        if ! grep -F "drawable=$drawable" "out/diagnostics/$engine-stderr.log"; then
+          echo "Ren’Py $engine did not report the rotated drawable dimensions." >&2
+          check_status=1
+        fi
+      fi
     else
       echo "Rotation and keyboard round trip did not finish." >&2
       check_status=1
@@ -155,7 +167,7 @@ with open(sys.argv[1], "rb") as stream:
     info = plistlib.load(stream)
 default = info["ReniosEngineVersion"]
 available = info["ReniosInstalledEngines"]
-priority = [v for v in (default, "8.5.3", "8.3.7", "7.8.7") if v in available]
+priority = [v for v in (default, "7.4.11", "8.5.3", "8.3.7", "7.8.7") if v in available]
 for version in priority + [v for v in available if v not in priority]:
     print(version)
 PYTHON

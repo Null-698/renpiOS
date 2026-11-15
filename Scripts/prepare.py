@@ -222,6 +222,26 @@ def python_series(version):
     return "3.9" if minor <= 3 else "3.12"
 
 
+def patch_legacy_drawable_resize(engine):
+    core = engine / "display" / "core.py"
+    source = core.read_text(encoding="utf-8")
+    original = "                if renpy.display.draw.update(force=self.display_reset):"
+    replacement = """                # Backport the iOS drawable-size check from Ren'Py 7.5.
+                force_resize = self.display_reset
+                if renpy.ios and not force_resize:
+                    cached_drawable = getattr(renpy.display.draw, "drawable_size", None)
+                    if cached_drawable is not None:
+                        drawable = pygame.display.get_drawable_size()
+                        force_resize = bool(drawable and min(drawable) > 0 and drawable != cached_drawable)
+
+                if renpy.display.draw.update(force=force_resize):"""
+    if source.count(original) != 1:
+        raise ValueError("Unexpected Ren’Py 7.4.11 resize loop")
+    core.write_text(source.replace(original, replacement), encoding="utf-8")
+    for suffix in (".pyc", ".pyo"):
+        core.with_suffix(suffix).unlink(missing_ok=True)
+
+
 def prepare_runtime(version, cache, build, *, host=True):
     candidates = [VERSIONS[version]]
     if version == "8.6.0":
@@ -265,6 +285,8 @@ def prepare_runtime(version, cache, build, *, host=True):
     base = prototype / "base"
     base.joinpath("lib").mkdir(parents=True)
     shutil.move(sdk / "renpy", base / "renpy")
+    if version == "7.4.11":
+        patch_legacy_drawable_resize(base / "renpy")
     shutil.move(sdk / "lib" / python_dir, base / "lib" / python_dir)
     shutil.move(sdk / "renpy.py", base / "renpy_entry.py")
     shutil.copyfile(sdk / "LICENSE.txt", base / "RenPy-LICENSE.txt")

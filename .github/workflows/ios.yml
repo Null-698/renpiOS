@@ -77,7 +77,7 @@ jobs:
           path: |
             out/library-probe*.json
             out/keyboard.png
-            out/controls-probe.json
+            out/controls-probe*.json
             out/keyboard-probe*.json
             out/quit-probe*.json
             out/diagnostics/

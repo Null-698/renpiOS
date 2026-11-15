@@ -436,7 +436,7 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
     };
     const char *hint = (RENIOS_SDL3 && !prefix) ? "SDL_ORIENTATIONS" : "SDL_IOS_ORIENTATIONS";
     const char *requestedOrientation = orientation[0] ? orientation : NULL;
-    if (probeEnabled && !prefix && !requestedOrientation) {
+    if (probeEnabled && (!prefix || [version isEqualToString:@"7.4.11"]) && !requestedOrientation) {
         requestedOrientation = "Portrait LandscapeLeft LandscapeRight";
     }
     if (requestedOrientation) { setenv(hint, requestedOrientation, 1); }
