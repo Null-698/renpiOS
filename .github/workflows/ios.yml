@@ -10,73 +10,73 @@ permissions:
   contents: read
 
 concurrency:
-  group: ios-${{ github.ref }}-${{ github.sha }}
+  group: ios-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Ren’Py ${{ matrix.engine }} · ${{ matrix.runner }}
+    name: Build reniOS with Xcode 27
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare Ren’Py 8.6.0
+        run: python3 Scripts/prepare.py 8.6.0
+      - name: Build unsigned iPhone archive
+        run: bash Scripts/package.sh
+      - name: Upload iPhone IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: reniOS-IPA
+          path: out/reniOS-unsigned.ipa
+          if-no-files-found: error
+      - name: Build the shared simulator app
+        run: |
+          bash Scripts/build-simulator.sh
+          ditto -c -k --keepParent .build/simulator/Build/Products/Debug-iphonesimulator/reniOS.app out/reniOS-simulator.zip
+      - name: Upload shared simulator app
+        uses: actions/upload-artifact@v4
+        with:
+          name: reniOS-simulator
+          path: out/reniOS-simulator.zip
+          if-no-files-found: error
+
+  test:
+    name: Keyboard · iOS ${{ matrix.os }}
+    needs: build
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 35
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         include:
-          - engine: '8.5.3'
+          - os: '26'
             runner: macos-26
-            os: '26'
-          - engine: '8.6.0'
-            runner: macos-26
-            os: '26'
-          - engine: '8.6.0'
+          - os: '27'
             runner: xcode-27
-            os: '27'
-    env:
-      ENGINE: ${{ matrix.engine }}
-      IOS_MAJOR: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - name: Select Xcode
+        if: matrix.os == '26'
         run: |
-          if [[ "$IOS_MAJOR" == 26 ]]; then
-            xcode=$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' | sort -V | tail -n1)
-            test -n "$xcode"
-            echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
-          fi
-      - name: Prepare the iOS project
-        id: prepare
-        run: python3 Scripts/prepare.py "$ENGINE"
-      - name: Build unsigned iPhone archive
-        run: bash Scripts/package.sh
-      - name: Upload iPhone build
-        uses: actions/upload-artifact@v4
+          xcode=$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' | sort -V | tail -n1)
+          test -n "$xcode"
+          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
         with:
-          name: reniOS-IPA-${{ matrix.engine }}-iOS-${{ matrix.os }}
-          path: out/reniOS-unsigned.ipa
-          if-no-files-found: error
-      - name: Build for the iPhone simulator
-        id: simulator_build
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
-        timeout-minutes: 7
-        run: bash Scripts/build-simulator.sh
+          name: reniOS-simulator
+          path: out
       - name: Check the viewport while the keyboard opens
-        if: ${{ !cancelled() && steps.simulator_build.outcome == 'success' }}
-        timeout-minutes: 18
-        run: bash Scripts/simulator.sh "$IOS_MAJOR"
-      - name: Upload simulator build and keyboard results
+        run: |
+          ditto -x -k out/reniOS-simulator.zip out
+          bash Scripts/simulator.sh "${{ matrix.os }}" "$PWD/out/reniOS.app"
+      - name: Upload keyboard results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: reniOS-simulator-${{ matrix.engine }}-iOS-${{ matrix.os }}
+          name: keyboard-iOS-${{ matrix.os }}
           path: |
-            out/reniOS-simulator.zip
             out/keyboard.png
             out/keyboard-probe.json
-            out/diagnostics/library.png
-          if-no-files-found: error
-      - name: Simulator diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: simulator-diagnostics-${{ matrix.engine }}-${{ matrix.os }}
-          path: out/diagnostics/
+            out/diagnostics/
           if-no-files-found: ignore

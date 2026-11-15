@@ -32,10 +32,11 @@ static void writeKeyboardProbe(void) {
     if (!viewport.window) { return; }
 
     CGRect current = [viewport convertRect:viewport.bounds toView:nil];
+    BOOL viewportStable = CGRectEqualToRect(viewportAtInput, current) &&
+                          current.size.width > 0 && current.size.height > 0;
     NSDictionary *result = @{
         @"keyboardVisible": @YES,
-        @"viewportStable": @(CGRectEqualToRect(viewportAtInput, current) &&
-                             current.size.width > 0 && current.size.height > 0),
+        @"viewportStable": viewportStable ? @YES : @NO,
         @"before": NSStringFromCGRect(viewportAtInput),
         @"after": NSStringFromCGRect(current)
     };

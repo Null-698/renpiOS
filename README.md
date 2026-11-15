@@ -4,14 +4,9 @@ A native Ren’Py library and player for iPhone and iPad. Requires iOS or iPadOS
 
 ## Builds
 
-Open **Actions → iOS builds** to download an unsigned ARM64 IPA, a simulator build, and the keyboard regression screenshot and measurement. The IPA requires signing. GitHub-hosted Macs run every build.
+Open **Actions → iOS builds** for one unsigned ARM64 IPA for iOS and iPadOS 26 or later. The app uses Ren’Py 8.6.0 prerelease with SDL3 and builds on Xcode 27. The IPA requires signing before installation.
 
-| App | Runtime | CI |
-| --- | --- | --- |
-| reniOS | Ren’Py 8.5.3, SDL2 | Xcode 26 |
-| reniOS Preview | Ren’Py 8.6.0 prerelease, SDL3 | Xcode 26 and 27 |
-
-Each app has its own bundle ID and library. Xcode 27 builds use the SDL3 scene lifecycle. The workflow fetches checksum-pinned official Ren’Py SDK and Renios archives at build time. The app uses original visuals and upstream engine files.
+Each run also builds one simulator app and installs that same build on iOS 26 and iOS 27 simulators. The test jobs publish keyboard screenshots and viewport measurements. GitHub-hosted Macs run every build, and CI checks the official SDK and Renios archives against pinned checksums.
 
 ## Library
 

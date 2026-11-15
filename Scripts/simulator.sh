@@ -4,7 +4,7 @@ set -euo pipefail
 major=${1:?pass the iOS major version}
 mkdir -p out/diagnostics
 
-app="$PWD/.build/simulator/Build/Products/Debug-iphonesimulator/reniOS.app"
+app=${2:?pass the path to the shared simulator app}
 test -d "$app"
 bundle=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist")
 runtime=$(xcrun simctl list runtimes -j | jq -r --arg version "$major" '
@@ -82,7 +82,3 @@ cp "$probe" out/keyboard-probe.json
 cat out/keyboard-probe.json
 jq -e '.keyboardVisible == true and .viewportStable == true' out/keyboard-probe.json
 bounded 60 xcrun simctl io "$udid" screenshot out/keyboard.png
-bounded 150 xcrun simctl launch --terminate-running-process "$udid" "$bundle"
-sleep 3
-bounded 60 xcrun simctl io "$udid" screenshot out/diagnostics/library.png
-ditto -c -k --keepParent "$app" out/reniOS-simulator.zip

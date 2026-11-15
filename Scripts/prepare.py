@@ -201,7 +201,7 @@ def prepare(version, cache):
     plist_path = prototype / "Info.plist"
     plist = plistlib.loads(plist_path.read_bytes())
     plist.update({
-        "CFBundleDisplayName": "reniOS" if version == "8.5.3" else "reniOS Preview",
+        "CFBundleDisplayName": "reniOS",
         "CFBundleShortVersionString": "0.1.0",
         "CFBundleVersion": "1",
         "CFBundleDocumentTypes": [{
