@@ -210,7 +210,8 @@ static void probePlaybackControls(void) {
                 writeProbe(@{
                     @"keyboardStayedHidden": @(hiddenThroughRotation),
                     @"keyboardReopened": @(gameTextField().isFirstResponder),
-                    @"rotated": @(rotated), @"viewportFillsWindow": @(fillsWindow)
+                    @"rotated": @(rotated),
+                    @"viewportFillsWindow": @(fillsWindow && viewportFillsWindow(gameController.viewIfLoaded))
                 }, @"renios-controls.json");
             }];
         }];

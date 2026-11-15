@@ -103,7 +103,7 @@ probe_playback() {
     echo "::warning::Keyboard screenshot unavailable"
   fi
 
-  if [[ -z "$suffix" && -s "$probe" ]]; then
+  if [[ -z "$suffix" ]]; then
     local controls="$data/Library/Caches/renios-controls.json"
     touch "$data/Library/Caches/renios-controls.request" || return
     for ((attempt=0; attempt<20; attempt++)); do
