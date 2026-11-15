@@ -81,4 +81,22 @@ fi
 cp "$probe" out/keyboard-probe.json
 cat out/keyboard-probe.json
 jq -e '.keyboardVisible == true and .viewportStable == true' out/keyboard-probe.json
-bounded 60 xcrun simctl io "$udid" screenshot out/keyboard.png
+if ! bounded 45 xcrun simctl io "$udid" screenshot out/keyboard.png; then
+  echo "::warning::Keyboard screenshot unavailable"
+fi
+
+# Ask the running host to invoke the Close button’s native action, then
+# require the demo's confirmation screen and a clean return from Ren'Py.
+touch "$data/Library/Caches/renios-quit.request"
+quit="$data/Library/Caches/renios-quit.json"
+for ((attempt=0; attempt<75; attempt++)); do
+  [[ ! -s "$quit" ]] || break
+  sleep 1
+done
+if [[ ! -s "$quit" ]]; then
+  echo "Ren’Py did not return from the Close action within 75 seconds." >&2
+  exit 1
+fi
+cp "$quit" out/quit-probe.json
+cat out/quit-probe.json
+jq -e '.confirmed == true and .exitStatus == 0' out/quit-probe.json

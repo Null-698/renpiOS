@@ -42,7 +42,7 @@ jobs:
           if-no-files-found: error
 
   test:
-    name: Keyboard · iOS ${{ matrix.os }}
+    name: Playback · iOS ${{ matrix.os }}
     needs: build
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
@@ -66,7 +66,7 @@ jobs:
         with:
           name: reniOS-simulator
           path: out
-      - name: Check the viewport while the keyboard opens
+      - name: Test keyboard and Close action
         run: |
           ditto -x -k out/reniOS-simulator.zip out
           bash Scripts/simulator.sh "${{ matrix.os }}" "$PWD/out/reniOS.app"
@@ -78,5 +78,6 @@ jobs:
           path: |
             out/keyboard.png
             out/keyboard-probe.json
+            out/quit-probe.json
             out/diagnostics/
           if-no-files-found: ignore

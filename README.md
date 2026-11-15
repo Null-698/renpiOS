@@ -16,7 +16,7 @@ Games and per-game saves are exposed in **Files → On My iPhone/iPad → reniOS
 
 ## Keyboard regression
 
-The session keeps SDL's UIKit render view in its existing coordinate space while SDL handles native text input. The CI probe starts an actual Ren’Py input prompt, waits for the iOS keyboard notification, and checks that the game's viewport frame stays fixed. The probe saves the measured rectangles and a screenshot.
+The session keeps SDL's UIKit render view in its existing coordinate space while SDL handles native text input. The CI probe starts an actual Ren’Py input prompt, waits for the iOS keyboard notification, and checks that the game's viewport frame stays fixed. The probe saves the measured rectangles and attempts to capture a screenshot. It then calls the same native quit action as the Close button, accepts the sample’s confirmation, and checks that Ren’Py returns successfully.
 
 ## Upstream components
 

@@ -2,6 +2,8 @@
 #import <objc/runtime.h>
 #import "Host.h"
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 extern int launcher_main(int argc, char **argv);
 extern void renios_library(void);
@@ -27,6 +29,17 @@ static void keepGameViewportInPlace(UIViewController *controller, SEL selector) 
     }
 }
 
+static NSURL *probeFile(NSString *name) {
+    NSURL *caches = [NSFileManager.defaultManager URLsForDirectory:NSCachesDirectory
+                                                        inDomains:NSUserDomainMask].firstObject;
+    return [caches URLByAppendingPathComponent:name];
+}
+
+static void writeProbe(NSDictionary *result, NSString *name) {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:result options:0 error:NULL];
+    [data writeToURL:probeFile(name) options:NSDataWritingAtomic error:NULL];
+}
+
 static void writeKeyboardProbe(void) {
     UIView *viewport = probedViewport;
     if (!viewport.window) { return; }
@@ -40,11 +53,7 @@ static void writeKeyboardProbe(void) {
         @"before": NSStringFromCGRect(viewportAtInput),
         @"after": NSStringFromCGRect(current)
     };
-    NSURL *caches = [NSFileManager.defaultManager URLsForDirectory:NSCachesDirectory
-                                                        inDomains:NSUserDomainMask].firstObject;
-    NSData *data = [NSJSONSerialization dataWithJSONObject:result options:0 error:nil];
-    [data writeToURL:[caches URLByAppendingPathComponent:@"renios-keyboard.json"]
-             options:NSDataWritingAtomic error:nil];
+    writeProbe(result, @"renios-keyboard.json");
 }
 
 int renios_play(const char *project, const char *saves, int keyboardProbe) {
@@ -55,6 +64,7 @@ int renios_play(const char *project, const char *saves, int keyboardProbe) {
     probeEnabled = keyboardProbe != 0;
     originalKeyboardUpdate = method_setImplementation(keyboardMethod, (IMP)keepGameViewportInPlace);
     id observer = nil;
+    NSTimer *quitProbe = nil;
     if (probeEnabled) {
         observer = [NSNotificationCenter.defaultCenter addObserverForName:UIKeyboardDidShowNotification
                         object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
@@ -62,6 +72,15 @@ int renios_play(const char *project, const char *saves, int keyboardProbe) {
             dispatch_async(dispatch_get_main_queue(), ^{ writeKeyboardProbe(); });
         }];
         setenv("RENIOS_KEYBOARD_PROBE", "1", 1);
+        unsetenv("RENIOS_QUIT_CONFIRMED");
+        NSURL *request = probeFile(@"renios-quit.request");
+        quitProbe = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
+            if (![NSFileManager.defaultManager fileExistsAtPath:request.path]) { return; }
+
+            [timer invalidate];
+            [NSFileManager.defaultManager removeItemAtURL:request error:NULL];
+            renios_request_quit();
+        }];
     }
 
     setenv("RENPY_PLATFORM", "ios-arm64", 1);
@@ -72,6 +91,15 @@ int renios_play(const char *project, const char *saves, int keyboardProbe) {
     };
     int status = launcher_main(4, argv);
 
+    [quitProbe invalidate];
+    if (probeEnabled) {
+        const char *confirmed = getenv("RENIOS_QUIT_CONFIRMED");
+        BOOL confirmationRan = confirmed && strcmp(confirmed, "1") == 0;
+        writeProbe(@{@"confirmed": confirmationRan ? @YES : @NO, @"exitStatus": @(status)},
+                   @"renios-quit.json");
+        unsetenv("RENIOS_QUIT_CONFIRMED");
+        unsetenv("RENIOS_KEYBOARD_PROBE");
+    }
     if (observer) { [NSNotificationCenter.defaultCenter removeObserver:observer]; }
     method_setImplementation(keyboardMethod, originalKeyboardUpdate);
     probedViewport = nil;
