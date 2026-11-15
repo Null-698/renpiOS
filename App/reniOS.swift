@@ -124,9 +124,15 @@ final class Session {
         }
     }
 
-    func delete(_ novel: Novel) {
+    func rename(_ novel: Novel, to name: String) {
+        do { try LibraryStore.rename(novel, to: name) }
+        catch { message = error.localizedDescription }
+        novels = LibraryStore.list()
+    }
+
+    func delete(_ novel: Novel, keepingSaves: Bool) {
         do {
-            try LibraryStore.delete(novel)
+            try LibraryStore.delete(novel, keepingSaves: keepingSaves)
             novels = LibraryStore.list()
         } catch {
             message = error.localizedDescription
@@ -180,26 +186,37 @@ final class Session {
         close.accessibilityLabel = "Close Game"
         close.translatesAutoresizingMaskIntoConstraints = false
         close.addAction(UIAction { _ in renios_request_quit() }, for: .touchUpInside)
+        let keyboard = UIButton(type: .system)
+        style.image = UIImage(systemName: "keyboard.chevron.compact.down")
+        keyboard.configuration = style
+        keyboard.tintColor = .white
+        keyboard.accessibilityLabel = "Dismiss Keyboard"
+        keyboard.translatesAutoresizingMaskIntoConstraints = false
+        keyboard.addAction(UIAction { _ in renios_dismiss_keyboard() }, for: .touchUpInside)
         container.view.addSubview(close)
+        container.view.addSubview(keyboard)
         NSLayoutConstraint.activate([
+            keyboard.trailingAnchor.constraint(equalTo: close.leadingAnchor, constant: -8),
+            keyboard.topAnchor.constraint(equalTo: close.topAnchor),
+            keyboard.widthAnchor.constraint(equalToConstant: 44),
+            keyboard.heightAnchor.constraint(equalToConstant: 44),
             close.trailingAnchor.constraint(equalTo: container.view.safeAreaLayoutGuide.trailingAnchor, constant: -10),
             close.topAnchor.constraint(equalTo: container.view.safeAreaLayoutGuide.topAnchor, constant: 8),
             close.widthAnchor.constraint(equalToConstant: 44),
             close.heightAnchor.constraint(equalToConstant: 44)
         ])
         overlay.rootViewController = container
-        overlay.touchTarget = close
+        overlay.touchTargets = [close, keyboard]
         overlay.isHidden = false
         return overlay
     }
 }
 
 private final class TouchThroughWindow: UIWindow {
-    weak var touchTarget: UIView?
+    var touchTargets: [UIView] = []
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard let target = touchTarget,
-              target.bounds.contains(convert(point, to: target)) else { return nil }
+        guard touchTargets.contains(where: { $0.bounds.contains(convert(point, to: $0)) }) else { return nil }
         return super.hitTest(point, with: event)
     }
 }
@@ -451,6 +468,10 @@ private struct NovelSheet: View {
     @State private var importingSaves = false
     @State private var saveArchive: URL?
     @State private var confirmingRestore = false
+    @State private var managingSaves = false
+    @State private var managingMods = false
+    @State private var renaming = false
+    @State private var newTitle = ""
 
     private var orientation: Binding<GameOrientation> {
         Binding(get: { novel.orientation ?? .automatic }, set: { value in
@@ -508,6 +529,12 @@ private struct NovelSheet: View {
                         .buttonStyle(.glassProminent)
                         .disabled(session.isImporting || Session.engine(for: novel) == nil)
                     }
+                    Button("Save Manager", systemImage: "archivebox") { managingSaves = true }
+                        .buttonStyle(.glass)
+                        .disabled(session.isImporting)
+                    Button("Mods", systemImage: "puzzlepiece.extension") { managingMods = true }
+                        .buttonStyle(.glass)
+                        .disabled(session.isImporting)
                     if let backup {
                         ShareLink(item: backup) { Label("Share Saves", systemImage: "square.and.arrow.up") }
                             .buttonStyle(.glass)
@@ -533,9 +560,18 @@ private struct NovelSheet: View {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Remove Game", systemImage: "trash", role: .destructive) { confirmingRemoval = true }
-                        .labelStyle(.iconOnly)
-                        .disabled(session.isImporting)
+                    Menu("Game Options", systemImage: "ellipsis.circle") {
+                        Button("Rename", systemImage: "pencil") {
+                            newTitle = novel.title
+                            renaming = true
+                        }
+                        ShareLink(item: LibraryStore.diagnostics(for: novel, engine: Session.engine(for: novel))) {
+                            Label("Share Diagnostics", systemImage: "doc.text")
+                        }
+                        Button("Remove Game", systemImage: "trash", role: .destructive) { confirmingRemoval = true }
+                    }
+                    .labelStyle(.iconOnly)
+                    .disabled(session.isImporting)
                 }
             }
             .fileImporter(isPresented: $importingSaves, allowedContentTypes: [.zip]) { result in
@@ -553,10 +589,16 @@ private struct NovelSheet: View {
                 Button("Cancel", role: .cancel) { saveArchive = nil }
             }
             .confirmationDialog("Remove \(novel.title)?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
-                Button("Remove Game", role: .destructive) { session.delete(novel); dismiss() }
-            } message: {
-                Text("Your saves stay in Files.")
+                Button("Remove Game, Keep Saves") { session.delete(novel, keepingSaves: true); dismiss() }
+                Button("Remove Game and Saves", role: .destructive) { session.delete(novel, keepingSaves: false); dismiss() }
             }
+            .alert("Rename Game", isPresented: $renaming) {
+                TextField("Game title", text: $newTitle)
+                Button("Save") { session.rename(novel, to: newTitle) }
+                Button("Cancel", role: .cancel) {}
+            }
+            .sheet(isPresented: $managingSaves) { SaveManager(novel: novel) }
+            .sheet(isPresented: $managingMods) { ModManager(novel: novel) }
         }
         .tint(amber)
     }

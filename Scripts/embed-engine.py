@@ -9,7 +9,8 @@ SDK_SETTINGS = {
     "iphoneos": ("arm64-apple-ios26.0", "release"),
     "iphonesimulator": ("arm64-apple-ios26.0-simulator", "debug"),
 }
-ENTRY_POINTS = ("launcher_main", "SDL_SetMainReady", "SDL_PushEvent", "renios_legacy_set_event_pump")
+ENTRY_POINTS = ("launcher_main", "SDL_SetMainReady", "SDL_PushEvent", "renios_legacy_set_event_pump",
+                "renios_legacy_dismiss_keyboard")
 
 
 def isolate_sdl(source, output, namespace):

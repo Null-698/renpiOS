@@ -156,7 +156,7 @@ def configure_project(project, version):
     if count != 1:
         raise ValueError("Expected one upstream frameworks phase")
 
-    for index, name in enumerate(("reniOS.swift", "Library.swift", "Engine.swift"), 4):
+    for index, name in enumerate(("reniOS.swift", "Library.swift", "Engine.swift", "APKTitle.swift", "Management.swift"), 4):
         reference = f"B100000000000000000000{index:02d}"
         build = f"B100000000000000000001{index:02d}"
         config = insert_after(config, "/* Begin PBXFileReference section */",
