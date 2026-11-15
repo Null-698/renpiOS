@@ -257,6 +257,7 @@ private struct LibraryScreen: View {
     @State private var importing = false
     @State private var filter = ""
     @State private var selected: Novel?
+    @State private var gameToLaunch: Novel?
     @State private var highlightedID: Novel.ID?
     @FocusState private var searching: Bool
 
@@ -309,9 +310,13 @@ private struct LibraryScreen: View {
             case .failure(let error): session.message = error.localizedDescription
             }
         }
-        .fullScreenCover(item: $selected) { novel in
-            NovelSheet(novel: session.novels.first { $0.id == novel.id } ?? novel, session: session,
-                           initialTab: previewTab ?? .overview)
+        .sheet(item: $selected, onDismiss: launchSelectedGame) { novel in
+            NovelSheet(novel: novel, session: session, initialTab: previewTab ?? .overview) { game in
+                gameToLaunch = game
+            }
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationCompactAdaptation(.none)
         }
         .alert("reniOS", isPresented: Binding(
             get: { session.message != nil },
@@ -577,6 +582,12 @@ private struct LibraryScreen: View {
         searching = false
         selected = game
     }
+
+    private func launchSelectedGame() {
+        guard let game = gameToLaunch else { return }
+        gameToLaunch = nil
+        session.launch(game)
+    }
 }
 
 private struct CoverArt: View {
@@ -637,6 +648,8 @@ private enum GameTab: String, CaseIterable, Identifiable {
 
     var id: Self { self }
 
+    var title: String { self == .overview ? "Game" : rawValue }
+
     var icon: String {
         switch self {
         case .overview: "play.rectangle"
@@ -651,17 +664,24 @@ private enum GameTab: String, CaseIterable, Identifiable {
 private struct NovelSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicType
-    let novel: Novel
+    let game: Novel
+    let launch: (Novel) -> Void
     @Bindable var session: Session
     @State private var tab: GameTab = .overview
+    @State private var choosingEngine = false
     @State private var confirmingRemoval = false
     @State private var renaming = false
     @State private var newTitle = ""
 
-    init(novel: Novel, session: Session, initialTab: GameTab) {
-        self.novel = novel
+    init(novel: Novel, session: Session, initialTab: GameTab, launch: @escaping (Novel) -> Void) {
+        game = novel
         self.session = session
+        self.launch = launch
         _tab = State(initialValue: initialTab)
+    }
+
+    private var novel: Novel {
+        session.novels.first { $0.id == game.id } ?? game
     }
 
     private var orientation: Binding<GameOrientation> {
@@ -682,18 +702,52 @@ private struct NovelSheet: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let wide = geometry.size.width >= 610 && geometry.size.width > geometry.size.height && !dynamicType.isAccessibilitySize
+            let wide = geometry.size.width >= 560 && geometry.size.width > geometry.size.height && !dynamicType.isAccessibilitySize
             VStack(spacing: 10) {
                 header
-                tabBar
-                HStack(alignment: .top, spacing: 15) {
-                    if wide {
-                        artwork.frame(width: min(geometry.size.width * 0.29, 310))
+                if wide {
+                    HStack(spacing: 14) {
+                        tabRail
+                        if tab == .overview {
+                            ScrollView {
+                                HStack(alignment: .top, spacing: 16) {
+                                    artwork.frame(height: 195)
+                                    VStack(alignment: .leading, spacing: 12) {
+                                        playButton
+                                        settings
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                }
+                            }
+                        } else {
+                            ScrollView {
+                                VStack(spacing: 9) {
+                                    artwork.frame(height: 125)
+                                    playButton
+                                }
+                            }
+                            .frame(width: min(geometry.size.width * 0.27, 275))
+                            managementPage
+                        }
                     }
-                    page(showArtwork: !wide)
+                } else {
+                    if tab == .overview {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 13) {
+                                artwork.frame(height: 195)
+                                playButton
+                                settings
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        managementPage
+                    }
+                    tabBar
                 }
             }
             .padding(.horizontal, 16)
+            .padding(.top, 17)
             .padding(.bottom, 6)
             .frame(maxWidth: 1100)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -702,6 +756,13 @@ private struct NovelSheet: View {
         .tint(amber)
         .preferredColorScheme(.dark)
         .interactiveDismissDisabled(session.isImporting)
+        .sheet(isPresented: $choosingEngine) {
+            EnginePicker(selection: engine, automaticVersion: Session.automaticEngine(for: novel))
+                .presentationDragIndicator(.visible)
+                .presentationDetents([.large])
+                .preferredColorScheme(.dark)
+                .tint(amber)
+        }
         .confirmationDialog("Remove \(novel.title)?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
             Button("Remove Game, Keep Saves") { session.delete(novel, keepingSaves: true); dismiss() }
             Button("Remove Game and Saves", role: .destructive) { session.delete(novel, keepingSaves: false); dismiss() }
@@ -720,7 +781,7 @@ private struct NovelSheet: View {
 
     private var header: some View {
         HStack(spacing: 11) {
-            Button("Library", systemImage: "chevron.left") { dismiss() }
+            Button("Close Game Details", systemImage: "xmark") { dismiss() }
                 .labelStyle(.iconOnly)
                 .font(.subheadline.weight(.semibold))
                 .frame(width: 44, height: 44)
@@ -756,47 +817,61 @@ private struct NovelSheet: View {
         Group {
             if dynamicType.isAccessibilitySize {
                 ScrollView(.horizontal) {
-                    HStack(spacing: 5) { tabButtons }
+                    HStack(spacing: 4) {
+                        ForEach(GameTab.allCases) { tabButton($0).fixedSize(horizontal: true, vertical: false) }
+                    }
                 }
                 .scrollIndicators(.hidden)
             } else {
-                HStack(spacing: 4) { tabButtons }
+                HStack(spacing: 4) {
+                    ForEach(GameTab.allCases) { tabButton($0) }
+                }
             }
         }
         .padding(4)
-        .background(panel, in: .rect(cornerRadius: 14))
-        .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(0.08)).allowsHitTesting(false) }
+        .background(panel, in: .rect(cornerRadius: 18))
         .disabled(session.isImporting)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Game tabs")
     }
 
-    private var tabButtons: some View {
-        ForEach(GameTab.allCases) { destination in
-            let selected = destination == tab
-            Button {
-                tab = destination
-            } label: {
-                ViewThatFits(in: .horizontal) {
-                    Label(destination.rawValue, systemImage: destination.icon)
-                    VStack(spacing: 4) {
-                        Image(systemName: destination.icon)
-                        Text(destination.rawValue)
-                    }
-                }
-                .font(.caption.weight(selected ? .bold : .medium))
-                .foregroundStyle(selected ? amber : .secondary)
-                .lineLimit(1)
-                .padding(.horizontal, 2)
-                .frame(minWidth: 48, maxWidth: .infinity, minHeight: 44)
-                .background(selected ? amber.opacity(0.15) : .clear, in: .rect(cornerRadius: 10))
-                .contentShape(.rect)
+    private var tabRail: some View {
+        ScrollView {
+            VStack(spacing: 4) {
+                ForEach(GameTab.allCases) { tabButton($0) }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(destination.rawValue)
-            .accessibilityAddTraits(selected ? .isSelected : [])
-            .accessibilityIdentifier("gameTab\(destination.rawValue)")
+            .padding(4)
         }
+        .scrollIndicators(.hidden)
+        .frame(width: 80)
+        .background(panel, in: .rect(cornerRadius: 18))
+        .disabled(session.isImporting)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Game tabs")
+    }
+
+    private func tabButton(_ destination: GameTab) -> some View {
+        let selected = destination == tab
+        return Button {
+            tab = destination
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: destination.icon)
+                    .font(.system(size: 16, weight: .semibold))
+                Text(destination.title)
+                    .font(.caption.weight(selected ? .semibold : .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(selected ? amber : .secondary)
+            .padding(.horizontal, 4)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .background(selected ? amber.opacity(0.13) : .clear, in: .rect(cornerRadius: 13))
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(destination.title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier("gameTab\(destination.rawValue)")
     }
 
     private var artwork: some View {
@@ -809,9 +884,9 @@ private struct NovelSheet: View {
         .frame(maxHeight: .infinity)
     }
 
-    @ViewBuilder private func page(showArtwork: Bool) -> some View {
+    @ViewBuilder private var managementPage: some View {
         switch tab {
-        case .overview: overview(showArtwork: showArtwork)
+        case .overview: EmptyView()
         case .saves: SaveManager(novel: novel)
         case .mods: ModManager(novel: novel, working: $session.isImporting)
         case .export: SaveExportTab(novel: novel, working: $session.isImporting)
@@ -819,61 +894,142 @@ private struct NovelSheet: View {
         }
     }
 
-    private func overview(showArtwork: Bool) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 13) {
-                if showArtwork {
-                    artwork.frame(height: 195)
-                }
-                HStack {
-                    if let version = novel.detectedEngine {
-                        Label("Built with Ren’Py \(version)", systemImage: "cpu")
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 0)
-                    Button("Play", systemImage: "play.fill") {
-                        dismiss()
-                        session.launch(novel)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .disabled(session.hasPlayed || session.isImporting || Session.engine(for: novel) == nil)
-                }
-                if session.hasPlayed {
-                    Label("Reopen reniOS to play again.", systemImage: "arrow.clockwise")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                VStack(spacing: 0) {
-                    HStack {
-                        Label("Engine", systemImage: "cpu")
-                        Spacer()
-                        Picker("Engine", selection: engine) {
-                            Text(Session.automaticEngine(for: novel).map { "Auto (\($0))" } ?? "Auto (Unavailable)")
-                                .tag(nil as String?)
-                            ForEach(Session.installedEngines, id: \.self) { Text($0).tag(Optional($0)) }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                    }
-                    Divider().overlay(.white.opacity(0.08))
-                    HStack {
-                        Label("Orientation", systemImage: "iphone")
-                        Spacer()
-                        Picker("Orientation", selection: orientation) {
-                            ForEach(GameOrientation.allCases) { Text($0.rawValue).tag($0) }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                    }
-                }
-                .font(.subheadline)
-                .padding(.horizontal, 13)
-                .padding(.vertical, 4)
-                .background(panel, in: .rect(cornerRadius: 15))
-                .disabled(session.isImporting)
-            }
-            .padding(.vertical, 3)
+    private var playButton: some View {
+        Button {
+            launch(novel)
+            dismiss()
+        } label: {
+            Label("Play", systemImage: "play.fill")
+                .font(.headline)
+                .frame(maxWidth: .infinity, minHeight: 50)
+                .foregroundStyle(ink)
+                .background(amber, in: .rect(cornerRadius: 15))
+                .contentShape(.rect)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .buttonStyle(.plain)
+        .opacity(canPlay ? 1 : 0.45)
+        .disabled(!canPlay)
+    }
+
+    private var canPlay: Bool {
+        !session.hasPlayed && !session.isImporting && Session.engine(for: novel) != nil
+    }
+
+    private var automaticEngine: String {
+        Session.automaticEngine(for: novel).map { "Auto · Ren’Py \($0)" } ?? "Auto · Unavailable"
+    }
+
+    private var settings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Game Settings")
+                .font(.subheadline.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
+            VStack(spacing: 0) {
+                Button {
+                    choosingEngine = true
+                } label: {
+                    settingRow("Engine", icon: "cpu",
+                               value: novel.engineOverride.map { "Ren’Py \($0)" } ?? automaticEngine)
+                }
+                .buttonStyle(.plain)
+                Divider()
+                Menu {
+                    Picker("Orientation", selection: orientation) {
+                        ForEach(GameOrientation.allCases) { mode in
+                            Label(mode.rawValue, systemImage: orientationIcon(mode)).tag(mode)
+                        }
+                    }
+                } label: {
+                    settingRow("Orientation", icon: "iphone", value: orientation.wrappedValue.rawValue)
+                }
+            }
+            .padding(.horizontal, 12)
+            .background(panel, in: .rect(cornerRadius: 14))
+            .disabled(session.isImporting)
+            if session.hasPlayed {
+                Label("Reopen reniOS to play again.", systemImage: "arrow.clockwise")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func settingRow(_ title: String, icon: String, value: String) -> some View {
+        HStack(spacing: 7) {
+            Label(title, systemImage: icon).foregroundStyle(cream)
+            Spacer(minLength: 0)
+            Text(value).foregroundStyle(amber).multilineTextAlignment(.trailing)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(amber)
+                .accessibilityHidden(true)
+        }
+        .font(.subheadline)
+        .frame(minHeight: 46)
+        .contentShape(.rect)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func orientationIcon(_ mode: GameOrientation) -> String {
+        switch mode {
+        case .automatic: "rotate.right"
+        case .portrait: "iphone"
+        case .landscape: "iphone.landscape"
+        }
+    }
+}
+
+private struct EnginePicker: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var selection: String?
+    let automaticVersion: String?
+    @State private var query = ""
+
+    private var versions: [String] {
+        Session.installedEngines.reversed().filter { query.isEmpty || "Ren’Py \($0)".localizedCaseInsensitiveContains(query) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                engineRow("Auto", detail: automaticVersion.map { "Ren’Py \($0)" } ?? "Unavailable", version: nil)
+                Section("Installed versions") {
+                    ForEach(versions, id: \.self) { version in
+                        engineRow("Ren’Py \(version)", detail: nil, version: version)
+                    }
+                    if versions.isEmpty {
+                        Text("No matching versions").foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Ren’Py Engine")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $query, prompt: "Search versions")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func engineRow(_ title: String, detail: String?, version: String?) -> some View {
+        Button {
+            selection = version
+            dismiss()
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).foregroundStyle(.primary)
+                    if let detail { Text(detail).font(.subheadline).foregroundStyle(.secondary) }
+                }
+                Spacer()
+                if selection == version {
+                    Image(systemName: "checkmark").foregroundStyle(amber).accessibilityHidden(true)
+                }
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selection == version ? .isSelected : [])
     }
 }
