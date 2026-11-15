@@ -266,7 +266,7 @@ enum LibraryStore {
         }
     }
 
-    struct SaveSlot: Identifiable {
+    struct SaveSlot: Identifiable, Sendable {
         let url: URL
         let date: Date
         var id: String { url.lastPathComponent }

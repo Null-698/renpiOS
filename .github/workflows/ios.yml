@@ -65,9 +65,23 @@ jobs:
         with:
           name: reniOS-simulator
           path: out
-      - name: Test imports, save restore, keyboard, and Close
+      - name: Capture launcher and management previews
+        continue-on-error: true
         run: |
           ditto -x -k out/reniOS-simulator.zip out
+          bash Scripts/simulator.sh 27 "$PWD/out/reniOS.app" preview
+      - name: Upload launcher previews
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher-previews-iOS-27
+          path: out/launcher-preview/*.png
+          if-no-files-found: warn
+      - name: Test imports, save restore, keyboard, and Close
+        run: |
+          if [[ ! -f out/reniOS.app/Info.plist ]]; then
+            ditto -x -k out/reniOS-simulator.zip out
+          fi
           bash Scripts/simulator.sh 27 "$PWD/out/reniOS.app"
       - name: Upload keyboard results
         if: always()

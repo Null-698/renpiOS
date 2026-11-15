@@ -2,6 +2,7 @@
 set -euo pipefail
 
 major=${1:?pass the iOS major version}
+mode=${3:-playback}
 mkdir -p out/diagnostics
 
 app=${2:?pass the path to the shared simulator app}
@@ -38,7 +39,9 @@ capture() {
   fi
   bounded 8 xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true
 }
-trap capture EXIT
+if [[ "$mode" == playback ]]; then
+  trap capture EXIT
+fi
 device_data=$(xcrun simctl list devices -j | jq -r --arg udid "$udid" '
   [.devices[][] | select(.udid == $udid)][0].dataPath // empty')
 if [[ -z "$device_data" ]]; then
@@ -69,10 +72,32 @@ for domain, additions in settings.items():
     temporary.replace(path)
 PYTHON
 defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool NO
-bounded 150 xcrun simctl boot "$udid"
+state=$(xcrun simctl list devices -j | jq -r --arg udid "$udid" '
+  [.devices[][] | select(.udid == $udid)][0].state')
+if [[ "$state" == Shutdown ]]; then
+  bounded 150 xcrun simctl boot "$udid"
+fi
 bounded 240 xcrun simctl bootstatus "$udid" -b
-bounded 150 xcrun simctl install "$udid" "$app"
+if [[ "$mode" == preview || ! -f out/launcher-preview/.installed ]]; then
+  bounded 150 xcrun simctl install "$udid" "$app"
+fi
 data=$(xcrun simctl get_app_container "$udid" "$bundle" data)
+
+if [[ "$mode" == preview ]]; then
+  mkdir -p out/launcher-preview
+  touch out/launcher-preview/.installed
+  for screen in Library Saves Mods Export Restore landscape; do
+    bounded 15 xcrun simctl terminate "$udid" "$bundle" >/dev/null 2>&1 || true
+    if bounded 45 xcrun simctl launch "$udid" "$bundle" --launcher-preview "$screen"; then
+      sleep 3
+      if ! bounded 30 xcrun simctl io "$udid" screenshot "out/launcher-preview/$screen.png"; then
+        echo "::warning::Could not capture the $screen preview"
+      fi
+    fi
+  done
+  bounded 15 xcrun simctl terminate "$udid" "$bundle" >/dev/null 2>&1 || true
+  exit 0
+fi
 
 probe_playback() {
   local engine=$1
