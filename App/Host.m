@@ -353,7 +353,7 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
             if ([NSFileManager.defaultManager fileExistsAtPath:controls.path] && startPlaybackControlsProbe()) {
                 [NSFileManager.defaultManager removeItemAtURL:controls error:NULL];
             }
-            if (!gameController.viewIfLoaded.window || !getenv("RENIOS_PROBE_ENGINE")
+            if (!getenv("RENIOS_PROBE_ENGINE")
                 || ![NSFileManager.defaultManager fileExistsAtPath:request.path]) { return; }
 
             [timer invalidate];

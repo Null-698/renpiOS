@@ -52,7 +52,9 @@ state=$(xcrun simctl list devices -j | jq -r --arg udid "$udid" '
 if [[ "$state" == Shutdown ]]; then
   bounded 150 xcrun simctl boot "$udid"
 fi
-bounded 240 xcrun simctl bootstatus "$udid" -b
+if ! bounded 240 xcrun simctl bootstatus "$udid" -b; then
+  bounded 120 xcrun simctl bootstatus "$udid" -b
+fi
 if [[ ! -f out/.simulator-installed ]]; then
   bounded 240 xcrun simctl install "$udid" "$app"
   touch out/.simulator-installed

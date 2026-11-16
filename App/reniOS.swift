@@ -94,6 +94,10 @@ final class Session {
         // SDL owns UIApplication. Let UIKit service its normal run loop while
         // its main-function callback waits for the library to select a game.
         let probing = !testGames.isEmpty
+        if probing {
+            // Let the library scene become active before simulating its Play action.
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 1))
+        }
         var nextTest = testGames.makeIterator()
         while true {
             guard let game = pending ?? nextTest.next() else {
@@ -112,7 +116,7 @@ final class Session {
             novels = LibraryStore.list()
             window.makeKeyAndVisible()
             if probing {
-                _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
             }
         }
     }

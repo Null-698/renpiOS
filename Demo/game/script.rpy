@@ -11,7 +11,7 @@ label start:
         $ os.environ["RENIOS_PROBE_PROJECT"] = os.path.basename(renpy.config.basedir)
         $ renpy.pause(0.2, hard=True)
         $ os.environ["RENIOS_PROBE_ENGINE"] = "{}.{}.{}".format(*tuple(renpy.version_tuple)[:3])
-        $ renpy.pause(hard=True)
+        "Playback check."
         return
 
     "You reach the observatory just as the last light leaves the sky."
