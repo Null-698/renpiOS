@@ -151,41 +151,42 @@ struct ModManager: View {
     @State private var message: String?
 
     var body: some View {
-        List {
-            Button("Add Mod ZIP", systemImage: "plus") { chooseZIP() }
-                .disabled(working)
-            if mods.isEmpty {
-                Text("No mods installed.").font(.subheadline).foregroundStyle(.secondary)
-            }
+        ManagementCollection(isEmpty: mods.isEmpty, emptyTitle: "No mods installed", emptyIcon: "puzzlepiece.extension",
+                             actionTitle: "Add Mod ZIP", actionIcon: "plus", working: working, message: message,
+                             action: { chooseZIP() }) {
             ForEach(mods) { mod in
-                HStack {
+                HStack(spacing: 12) {
+                    managementIcon("puzzlepiece.extension")
                     Toggle(isOn: Binding(get: { mod.enabled }, set: { enabled in
                         run { try LibraryStore.setMod(mod.id, enabled: enabled, on: novel) }
                     })) {
-                        Text(mod.name).lineLimit(2)
+                        Text(mod.name)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(cream)
+                            .lineLimit(2)
                     }
+                    .tint(amber)
                     Menu {
                         Button("Replace ZIP", systemImage: "arrow.triangle.2.circlepath") {
                             chooseZIP(replacing: mod.id)
                         }
                         Button("Remove Mod", systemImage: "trash", role: .destructive) { removing = mod }
                     } label: {
-                        Image(systemName: "ellipsis.circle").frame(width: 44, height: 44)
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 17, weight: .semibold))
+                            .frame(width: 32, height: 44)
+                            .foregroundStyle(.secondary)
                     }
                     .accessibilityLabel("Options for \(mod.name)")
                 }
+                .managementRow()
                 .disabled(working)
-                .listRowBackground(panel)
                 .swipeActions(allowsFullSwipe: false) {
                     Button("Remove Mod", systemImage: "trash", role: .destructive) { removing = mod }
                         .disabled(working)
                 }
             }
-            if working { ProgressView().accessibilityLabel("Working on mods") }
-            if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
         .fileImporter(isPresented: $importing, allowedContentTypes: [.zip]) { result in
             switch result {
             case .success(let url):
@@ -253,15 +254,16 @@ struct SaveExportTab: View {
     @State private var message: String?
 
     var body: some View {
-        List {
-            Button("Create Backup", systemImage: "plus") { export() }
-                .disabled(working)
+        ManagementCollection(isEmpty: archives.isEmpty, emptyTitle: "No backups yet", emptyIcon: "archivebox",
+                             actionTitle: "Create Backup", actionIcon: "archivebox.fill", working: working,
+                             message: message, action: export) {
             ForEach(archives) { archive in
                 ShareLink(item: archive.url) {
-                    archiveRow("Save Backup", archive: archive, action: "square.and.arrow.up")
+                    archiveRow("Save Backup", icon: "archivebox", archive: archive, action: "square.and.arrow.up")
                 }
+                .buttonStyle(.plain)
+                .managementRow()
                 .disabled(working)
-                .listRowBackground(panel)
                 .swipeActions(allowsFullSwipe: false) {
                     Button("Delete Backup", systemImage: "trash", role: .destructive) {
                         delete(archive)
@@ -269,11 +271,7 @@ struct SaveExportTab: View {
                     .disabled(working)
                 }
             }
-            if working { ProgressView().accessibilityLabel("Creating backup") }
-            if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
         .onAppear { refresh() }
     }
 
@@ -306,17 +304,18 @@ struct SaveRestoreTab: View {
     @State private var message: String?
 
     var body: some View {
-        List {
-            Button("Add Backup ZIP", systemImage: "plus") { choosing = true }
-                .disabled(session.isImporting)
+        ManagementCollection(isEmpty: archives.isEmpty, emptyTitle: "No backups to restore", emptyIcon: "arrow.down.to.line",
+                             actionTitle: "Add Backup ZIP", actionIcon: "folder.badge.plus", working: session.isImporting,
+                             message: message, action: { choosing = true }) {
             ForEach(archives) { archive in
                 Button {
                     pending = archive
                 } label: {
-                    archiveRow(archive.url.lastPathComponent, archive: archive, action: "arrow.down.to.line")
+                    archiveRow(archive.url.lastPathComponent, icon: "doc.zipper", archive: archive, action: "arrow.down.to.line")
                 }
+                .buttonStyle(.plain)
+                .managementRow()
                 .disabled(session.isImporting)
-                .listRowBackground(panel)
                 .swipeActions(allowsFullSwipe: false) {
                     Button("Remove ZIP", systemImage: "trash", role: .destructive) {
                         do {
@@ -327,11 +326,7 @@ struct SaveRestoreTab: View {
                     .disabled(session.isImporting)
                 }
             }
-            if session.isImporting { ProgressView().accessibilityLabel("Working with backup ZIPs") }
-            if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
         .onAppear { refresh() }
         .fileImporter(isPresented: $choosing, allowedContentTypes: [.zip], allowsMultipleSelection: true) { result in
             switch result {
@@ -376,8 +371,94 @@ struct SaveRestoreTab: View {
     }
 }
 
-private func archiveRow(_ title: String, archive: LibraryStore.SaveArchive, action: String) -> some View {
-    HStack {
+private struct ManagementCollection<Rows: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let isEmpty: Bool
+    let emptyTitle: String
+    let emptyIcon: String
+    let actionTitle: String
+    let actionIcon: String
+    let working: Bool
+    let message: String?
+    let action: () -> Void
+    @ViewBuilder let rows: () -> Rows
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            if isEmpty {
+                VStack(spacing: 13) {
+                    Image(systemName: emptyIcon)
+                        .font(.system(size: 28, weight: .light))
+                        .foregroundStyle(amber)
+                        .accessibilityHidden(true)
+                    Text(emptyTitle)
+                        .font(.system(.title3, design: .serif).weight(.medium))
+                        .foregroundStyle(cream)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .transition(.opacity)
+            } else {
+                List { rows() }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .safeAreaPadding(.bottom, 72)
+                    .transition(.opacity)
+            }
+            if let message {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 12)
+                    .padding(.trailing, 76)
+                    .padding(.bottom, 14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Button(action: action) {
+                Group {
+                    if working { ProgressView().tint(amber) }
+                    else { Image(systemName: actionIcon).font(.system(size: 23, weight: .semibold)) }
+                }
+                .foregroundStyle(cream)
+                .frame(width: 58, height: 58)
+                .glassEffect(.regular.tint(amber.opacity(0.32)).interactive(), in: .circle)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(actionTitle)
+            .accessibilityHint(working ? "In progress" : "")
+            .disabled(working)
+            .padding([.trailing, .bottom], 10)
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: isEmpty)
+    }
+}
+
+private extension View {
+    func managementRow() -> some View {
+        self
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .frame(minHeight: 62)
+            .background(.white.opacity(0.045), in: .rect(cornerRadius: 17))
+            .overlay { RoundedRectangle(cornerRadius: 17).strokeBorder(.white.opacity(0.09)).allowsHitTesting(false) }
+            .contentShape(.rect(cornerRadius: 17))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(.init(top: 5, leading: 2, bottom: 5, trailing: 2))
+    }
+}
+
+private func managementIcon(_ icon: String) -> some View {
+    Image(systemName: icon)
+        .font(.system(size: 17, weight: .medium))
+        .foregroundStyle(amber)
+        .frame(width: 38, height: 38)
+        .background(amber.opacity(0.10), in: .rect(cornerRadius: 11))
+        .accessibilityHidden(true)
+}
+
+private func archiveRow(_ title: String, icon: String, archive: LibraryStore.SaveArchive, action: String) -> some View {
+    HStack(spacing: 12) {
+        managementIcon(icon)
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(cream).lineLimit(2)
             Text(archive.date.formatted(date: .abbreviated, time: .shortened))
@@ -386,8 +467,6 @@ private func archiveRow(_ title: String, archive: LibraryStore.SaveArchive, acti
         Spacer()
         Image(systemName: action).foregroundStyle(amber).accessibilityHidden(true)
     }
-    .padding(.vertical, 5)
-    .contentShape(.rect)
 }
 
 private struct ManagementPanel<Content: View>: View {

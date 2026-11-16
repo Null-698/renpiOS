@@ -472,6 +472,7 @@ private struct LibraryScreen: View {
     @State private var highlightedID: Novel.ID?
     @State private var openedID: Novel.ID?
     @State private var showingInsights = false
+    @State private var coverAccent: Color?
     @FocusState private var searching: Bool
     @FocusState private var focusedGame: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -504,7 +505,7 @@ private struct LibraryScreen: View {
 
             let feature = games.first(where: { $0.id == highlightedID }) ?? games.first
             VStack(spacing: 0) {
-                header
+                header(wide: wide)
                     .padding(.horizontal, 20)
                     .padding(.bottom, wide ? 9 : 13)
                 if showingInsights {
@@ -535,18 +536,28 @@ private struct LibraryScreen: View {
                 let marker = URL.cachesDirectory.appending(path: "renios-preview.txt")
                 try? Data(previewName.utf8).write(to: marker, options: .atomic)
             }
-            .background {
-                if wide && !showingInsights && !searching, let feature {
-                    RadialGradient(colors: [carouselTint(feature).opacity(0.25), ink], center: .top,
-                                   startRadius: 10, endRadius: geometry.size.width * 0.72)
-                        .ignoresSafeArea()
-                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.32), value: feature.id)
+            .task(id: wide ? feature?.cover : nil) {
+                let url = wide ? feature?.cover : nil
+                let rgb = await Task.detached(priority: .utility) { Self.coverColor(at: url) }.value
+                guard !Task.isCancelled else { return }
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) {
+                    coverAccent = rgb.map {
+                        Color(red: Double(($0 >> 16) & 255) / 255,
+                              green: Double(($0 >> 8) & 255) / 255,
+                              blue: Double($0 & 255) / 255)
+                    }
                 }
             }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if !showingInsights {
-                searchDock.padding(.top, 7).padding(.bottom, 4)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if !showingInsights { searchDock(wide: wide).padding(.vertical, 6) }
+            }
+            .background {
+                if wide && !showingInsights && !searching, let coverAccent {
+                    RadialGradient(colors: [coverAccent.opacity(0.22), .clear], center: .center,
+                                   startRadius: 0, endRadius: geometry.size.width * 0.75)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                }
             }
         }
         .background(ink.ignoresSafeArea())
@@ -590,7 +601,7 @@ private struct LibraryScreen: View {
         }
     }
 
-    private var header: some View {
+    private func header(wide: Bool) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "book.closed.fill")
                 .font(.system(size: 12, weight: .semibold))
@@ -613,23 +624,7 @@ private struct LibraryScreen: View {
                     .controlSize(.small)
                     .accessibilityLabel("Importing")
             }
-            if !showingInsights {
-                Menu {
-                    Button("Import Game", systemImage: "folder") {
-                        searching = false
-                        importing = true
-                    }
-                    Button("Add Sample", systemImage: "sparkle") { session.add(nil) }
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 16, weight: .semibold))
-                        .frame(width: 44, height: 44)
-                        .background(.white.opacity(0.075), in: .circle)
-                }
-                .accessibilityLabel("Add to Library")
-                .accessibilityIdentifier("importGame")
-                .disabled(session.isImporting)
-            }
+            if !showingInsights && !wide { importButton }
         }
     }
 
@@ -650,31 +645,51 @@ private struct LibraryScreen: View {
         .accessibilityAddTraits(active ? .isSelected : [])
     }
 
-    private var searchDock: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 15, weight: .medium))
+    private var importButton: some View {
+        Button {
+            searching = false
+            importing = true
+        } label: {
+            Image(systemName: "square.and.arrow.down")
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(amber)
-                .accessibilityHidden(true)
-            TextField("Search games", text: $filter)
-                .textFieldStyle(.plain)
-                .submitLabel(.search)
-                .focused($searching)
-                .onSubmit { searching = false }
-                .accessibilityIdentifier("searchStories")
-            if !filter.isEmpty {
-                Button("Clear Search", systemImage: "xmark.circle.fill") { filter = "" }
-                    .labelStyle(.iconOnly)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 34, height: 44)
-            }
+                .frame(width: 48, height: 48)
+                .glassEffect(.regular.interactive(), in: .circle)
         }
-        .padding(.horizontal, 15)
-        .frame(maxWidth: 450, minHeight: 46)
-        .background(.white.opacity(0.07), in: .capsule)
-        .overlay { Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1).allowsHitTesting(false) }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Import Game")
+        .accessibilityIdentifier("importGame")
+        .disabled(session.isImporting)
+    }
+
+    private func searchDock(wide: Bool) -> some View {
+        GlassEffectContainer(spacing: 10) {
+            HStack(spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(amber)
+                        .accessibilityHidden(true)
+                    TextField("Search games", text: $filter)
+                        .textFieldStyle(.plain)
+                        .submitLabel(.search)
+                        .focused($searching)
+                        .onSubmit { searching = false }
+                        .accessibilityIdentifier("searchStories")
+                    if !filter.isEmpty {
+                        Button("Clear Search", systemImage: "xmark.circle.fill") { filter = "" }
+                            .labelStyle(.iconOnly)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 34, height: 44)
+                    }
+                }
+                .padding(.horizontal, 15)
+                .frame(minHeight: 48)
+                .glassEffect(.regular, in: .capsule)
+                if wide { importButton }
+            }
+            .frame(maxWidth: wide ? 510 : 450)
+        }
         .padding(.horizontal, 20)
-        .padding(.bottom, 5)
         .frame(maxWidth: .infinity)
     }
 
@@ -773,15 +788,15 @@ private struct LibraryScreen: View {
                                   anchor: .leading, perspective: 0.32)
                 .frame(width: width, alignment: .leading)
             if open {
-                VStack(alignment: .leading, spacing: 9) {
-                    Button("Play", systemImage: "play.fill") { session.launch(game) }
-                        .buttonStyle(.glassProminent)
-                        .disabled(session.isImporting || Session.engine(for: game) == nil)
-                    Button("Details", systemImage: "info.circle") { showDetails(game) }
-                        .buttonStyle(.glass)
+                GlassEffectContainer(spacing: 12) {
+                    VStack(spacing: 10) {
+                        libraryAction("Play", icon: "play.fill", prominent: true) { session.launch(game) }
+                            .disabled(session.isImporting || Session.engine(for: game) == nil)
+                        libraryAction("Details", icon: "text.alignleft") { showDetails(game) }
+                    }
+                    .padding(.horizontal, 13)
                 }
-                .font(.subheadline.weight(.semibold))
-                .frame(width: width * 0.36)
+                .frame(width: width * 0.40)
                 .transition(reduceMotion ? .opacity : .offset(x: 16, y: 0).combined(with: .opacity))
             }
         }
@@ -798,10 +813,54 @@ private struct LibraryScreen: View {
                 Color(red: 0.48, green: 0.81, blue: 0.70), Color(red: 0.91, green: 0.54, blue: 0.64)][index]
     }
 
+    private func libraryAction(_ title: String, icon: String, prominent: Bool = false,
+                               action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: icon).font(.system(size: 15, weight: .bold))
+                Text(title).font(.headline.weight(.semibold)).lineLimit(1)
+            }
+            .foregroundStyle(prominent ? Color.white : cream)
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .glassEffect(.regular.tint(prominent ? amber.opacity(0.46) : nil).interactive(),
+                         in: .rect(cornerRadius: prominent ? 17 : 22))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private nonisolated static func coverColor(at url: URL?) -> UInt32? {
+        guard let url, let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: 24
+              ] as CFDictionary),
+              let context = CGContext(data: nil, width: 16, height: 16, bitsPerComponent: 8, bytesPerRow: 64,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+              let pixels = context.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: 16, height: 16))
+        var red = 0
+        var green = 0
+        var blue = 0
+        var total = 0
+        for index in stride(from: 0, to: 1024, by: 4) where pixels[index + 3] > 192 {
+            let r = Int(pixels[index]), g = Int(pixels[index + 1]), b = Int(pixels[index + 2])
+            let light = max(r, g, b)
+            guard light > 25 else { continue }
+            let weight = light - min(r, g, b) + 1
+            red += r * weight
+            green += g * weight
+            blue += b * weight
+            total += weight
+        }
+        guard total > 0 else { return nil }
+        return UInt32(red / total) << 16 | UInt32(green / total) << 8 | UInt32(blue / total)
+    }
+
     private func gameVersions(_ game: Novel) -> some View {
         HStack(spacing: 7) {
-            if let version = game.gameVersion { Text("v \(version)") }
-            else { Text("v —").accessibilityLabel("Game version unknown") }
+            if let version = game.gameVersion { Text(version).accessibilityLabel("Game version \(version)") }
             if let engine = game.detectedEngine {
                 Text("Ren’Py \(engine)").foregroundStyle(amber)
             } else if let selection = game.engineOverride, Session.installedEngines.contains(selection) {
@@ -813,8 +872,11 @@ private struct LibraryScreen: View {
             }
         }
         .font(.caption2.monospacedDigit().weight(.medium))
-        .foregroundStyle(.white.opacity(0.84))
+        .foregroundStyle(.white.opacity(0.94))
         .lineLimit(1)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.ultraThinMaterial, in: .capsule)
     }
 
     private func landscapeSearchResults(_ games: [Novel]) -> some View {
@@ -859,8 +921,6 @@ private struct LibraryScreen: View {
                                     .overlay(alignment: .bottomLeading) {
                                         gameVersions(game)
                                             .padding(7)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .background(.black.opacity(0.64))
                                     }
                                     .clipShape(.rect(cornerRadius: 12))
                                 Text(game.title)
@@ -921,17 +981,17 @@ private struct LibraryScreen: View {
                     .foregroundStyle(cream)
                     .lineLimit(2)
                     .accessibilityAddTraits(.isHeader)
-                HStack(spacing: 8) {
-                    Button("Play", systemImage: "play.fill") {
-                        searching = false
-                        session.launch(game)
+                GlassEffectContainer(spacing: 10) {
+                    HStack(spacing: 10) {
+                        libraryAction("Play", icon: "play.fill", prominent: true) {
+                            searching = false
+                            session.launch(game)
+                        }
+                        .disabled(session.isImporting || Session.engine(for: game) == nil)
+                        libraryAction("Details", icon: "text.alignleft") { showDetails(game) }
                     }
-                    .buttonStyle(.glassProminent)
-                    .disabled(session.isImporting || Session.engine(for: game) == nil)
-                    Button("Details", systemImage: "info.circle") { showDetails(game) }
-                        .buttonStyle(.glass)
+                    .frame(maxWidth: 315)
                 }
-                .font(.subheadline.weight(.semibold))
             }
             .padding(compact ? 17 : 20)
         }
@@ -967,9 +1027,6 @@ private struct LibraryScreen: View {
         }
         .buttonStyle(.glassProminent)
         .disabled(session.isImporting)
-        Button("Add Sample", systemImage: "sparkle") { session.add(nil) }
-            .buttonStyle(.glass)
-            .disabled(session.isImporting)
     }
 
     private func showDetails(_ game: Novel, tab: GameTab = .overview) {
