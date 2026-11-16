@@ -769,8 +769,8 @@ private struct LibraryScreen: View {
             }
             cover
                 .frame(width: reduceMotion && open ? width * 0.52 : width, height: height)
-                .rotation3DEffect(.degrees(open && !reduceMotion ? -63 : 0), axis: (x: 0, y: 1, z: 0),
-                                  anchor: .leading, perspective: 0.48)
+                .rotation3DEffect(.degrees(open && !reduceMotion ? 53 : 0), axis: (x: 0, y: 1, z: 0),
+                                  anchor: .leading, perspective: 0.32)
                 .frame(width: width, alignment: .leading)
             if open {
                 VStack(alignment: .leading, spacing: 9) {
