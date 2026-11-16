@@ -16,6 +16,7 @@ final class Session {
     var isImporting = false
     var message: String?
     private var pending: Novel?
+    @ObservationIgnored private var coverLookups = Set<UUID>()
 
     static var engine: String {
         Bundle.main.object(forInfoDictionaryKey: "ReniosEngineVersion") as? String ?? ""
@@ -106,6 +107,7 @@ final class Session {
             }
             novels = LibraryStore.list()
             window.makeKeyAndVisible()
+            findCoverIfVerified(for: game.id)
         }
     }
 
@@ -138,19 +140,29 @@ final class Session {
         Task {
             defer { isImporting = false }
             do {
-                if let source {
-                    _ = try await Task.detached(priority: .userInitiated) {
-                        try LibraryStore.install(source)
-                    }.value
-                } else {
-                    _ = try await Task.detached(priority: .userInitiated) {
-                        try LibraryStore.installDemo()
-                    }.value
-                }
+                let installed = try await Task.detached(priority: .userInitiated) {
+                    if let source { return try LibraryStore.install(source) }
+                    return try LibraryStore.installDemo()
+                }.value
                 novels = LibraryStore.list()
+                findCoverIfVerified(for: installed.id)
             } catch {
                 message = error.localizedDescription
             }
+        }
+    }
+
+    private func findCoverIfVerified(for id: Novel.ID) {
+        guard let game = novels.first(where: { $0.id == id }),
+              let developer = GameMetadata.displayTitle(game.developer), game.cover == nil,
+              game.automaticCoverDisabled != true, coverLookups.insert(id).inserted else { return }
+        Task { [weak self] in
+            guard let result = try? await CoverLookup.match(title: game.title, developer: developer),
+                  let image = result.image, let data = try? await CoverLookup.download(image.url),
+                  let self, let current = novels.first(where: { $0.id == id }),
+                  current.title == game.title, current.developer == game.developer,
+                  current.cover == nil, current.automaticCoverDisabled != true else { return }
+            try? setCover(data, for: current)
         }
     }
 

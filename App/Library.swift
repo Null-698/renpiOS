@@ -23,6 +23,7 @@ struct Novel: Codable, Identifiable, Equatable, Sendable {
     var coverScanned: Bool?
     var developer: String?
     var coverOverride: UUID?
+    var automaticCoverDisabled: Bool?
 
     var customCover: URL? { coverOverride.map { root.appending(path: ".renios-cover-\($0.uuidString).jpg") } }
 
@@ -216,8 +217,12 @@ enum LibraryStore {
     }
 
     static func setCover(_ data: Data?, for novel: Novel) throws {
-        var updated = novel
+        guard let current = readNovel(in: novel.root), current.id == novel.id else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        var updated = current
         updated.coverOverride = data.map { _ in UUID() }
+        if data == nil { updated.automaticCoverDisabled = true }
         if let data, let url = updated.customCover {
             try data.write(to: url, options: .atomic)
         }
@@ -226,7 +231,7 @@ enum LibraryStore {
             if let url = updated.customCover { try? fm.removeItem(at: url) }
             throw error
         }
-        if let old = novel.customCover { try? fm.removeItem(at: old) }
+        if let old = current.customCover { try? fm.removeItem(at: old) }
     }
 
     static func recordPlay(_ novel: Novel) throws {

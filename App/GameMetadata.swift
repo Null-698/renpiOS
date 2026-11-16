@@ -11,7 +11,7 @@ enum GameMetadata {
     }
 
     static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "webp", "avif", "heic", "bmp"]
-    private static let genericNames: Set<String> = ["game", "renpy", "ren'py", "untitled", "mygame", "example", "unknown"]
+    private static let genericNames: Set<String> = ["game", "renpy", "ren'py", "ren'py game", "ren’py game", "untitled", "mygame", "example", "unknown"]
 
     static func key(_ value: String) -> String {
         value.precomposedStringWithCanonicalMapping.lowercased()
