@@ -46,7 +46,7 @@ struct Novel: Codable, Identifiable, Equatable, Sendable {
 }
 
 enum ImportFailure: LocalizedError {
-    case missingGame, unsafeEntry, tooLarge, missingDemo, missingSaves, missingMod, modInstalled
+    case missingGame, unsafeEntry, tooLarge, missingDemo, missingSaves, missingMod
     case duplicate(String)
     case importChoiceRequired
     case saveFolderInUse
@@ -62,7 +62,6 @@ enum ImportFailure: LocalizedError {
         case .missingDemo: "The sample game is missing from this build."
         case .missingSaves: "This archive contains no Ren’Py saves."
         case .missingMod: "No mod files were found."
-        case .modInstalled: "Remove the installed mod before adding another."
         }
     }
 }
@@ -350,9 +349,7 @@ enum LibraryStore {
                 let similarFiles = novel.fingerprint != nil && novel.fingerprint == current.fingerprint
                 var digest = current.contentDigest
                 if digest == nil, sharedID || similarFiles {
-                    let original = modFolder(for: current).appending(path: "original")
-                    let source = fm.fileExists(atPath: original.path) ? original : current.root.appending(path: "game")
-                    digest = try? GameMetadata.contentDigest(in: source)
+                    digest = try? GameMetadata.contentDigest(in: pristineGame(for: current))
                 }
                 if let digest, digest == novel.contentDigest { throw ImportFailure.duplicate(current.title) }
                 if sharedID { matchingGames.append(current) }
@@ -414,6 +411,7 @@ enum LibraryStore {
             if let cover = current.customCover, fm.fileExists(atPath: cover.path) {
                 try fm.copyItem(at: cover, to: plan.staging.appending(path: cover.lastPathComponent))
             }
+            try retainMods(for: current, in: plan.staging)
             try write(updated, to: plan.staging)
             _ = try fm.replaceItemAt(current.root, withItemAt: plan.staging, options: [.usingNewMetadataOnly])
             try? registerSaves(for: updated)
@@ -530,21 +528,113 @@ enum LibraryStore {
         try fm.copyItem(at: slot.url, to: output)
     }
 
-    private static func modFolder(for novel: Novel) -> URL { novel.root.appending(path: ".mod") }
+    struct InstalledMod: Identifiable, Sendable {
+        let id: UUID
+        let name: String
+        let enabled: Bool
+    }
 
-    static func installedMod(for novel: Novel) -> String? {
-        let folder = modFolder(for: novel)
-        guard fm.fileExists(atPath: folder.appending(path: "original").path) else { return nil }
+    private static func modStore(in root: URL) -> URL { root.appending(path: ".mods") }
+    private static func modBaseline(in root: URL) -> URL { root.appending(path: ".mods-original") }
+    private static func legacyMod(in root: URL) -> URL { root.appending(path: ".mod") }
+    private static func modState(in game: URL) -> URL { game.appending(path: ".renios-mod-state.json") }
+
+    private static func enabledMods(in game: URL) throws -> [UUID] {
+        let state = modState(in: game)
+        guard fm.fileExists(atPath: state.path) else { return [] }
+        return try JSONDecoder().decode([UUID].self, from: Data(contentsOf: state))
+    }
+
+    private static func writeMods(_ ids: [UUID], in game: URL) throws {
+        try JSONEncoder().encode(ids).write(to: modState(in: game), options: .atomic)
+    }
+
+    static func installedMods(for novel: Novel) -> [InstalledMod] {
+        let game = novel.root.appending(path: "game")
+        let enabled = Set((try? enabledMods(in: game)) ?? [])
+        var mods = folders(in: modStore(in: novel.root)).compactMap { dir -> InstalledMod? in
+            guard let id = UUID(uuidString: dir.lastPathComponent),
+                  let name = try? String(contentsOf: dir.appending(path: "name"), encoding: .utf8),
+                  fm.fileExists(atPath: dir.appending(path: "payload").path) else { return nil }
+            return InstalledMod(id: id, name: name, enabled: enabled.contains(id))
+        }
+        if let name = legacyModName(for: novel) {
+            mods.removeAll { $0.id == novel.id }
+            mods.append(InstalledMod(id: novel.id, name: name, enabled: true))
+        }
+        return mods.sorted { ($0.name.lowercased(), $0.id.uuidString) < ($1.name.lowercased(), $1.id.uuidString) }
+    }
+
+    private static func legacyModName(for novel: Novel) -> String? {
+        let folder = legacyMod(in: novel.root)
+        guard !fm.fileExists(atPath: modState(in: novel.root.appending(path: "game")).path),
+              fm.fileExists(atPath: folder.appending(path: "original").path) else { return nil }
         return try? String(contentsOf: folder.appending(path: "name"), encoding: .utf8)
     }
 
     private static func recoverMod(for novel: Novel) {
-        let folder = modFolder(for: novel)
         let game = novel.root.appending(path: "game")
-        let original = folder.appending(path: "original")
+        let original = legacyMod(in: novel.root).appending(path: "original")
         if !fm.fileExists(atPath: game.path), fm.fileExists(atPath: original.path) {
             try? fm.moveItem(at: original, to: game)
         }
+    }
+
+    private static func pristineGame(for novel: Novel) -> URL {
+        let baseline = modBaseline(in: novel.root)
+        let game = novel.root.appending(path: "game")
+        if (try? enabledMods(in: game).isEmpty) == false { return baseline }
+        if legacyModName(for: novel) != nil { return legacyMod(in: novel.root).appending(path: "original") }
+        return game
+    }
+
+    private static func retainLegacyMod(for novel: Novel, in root: URL) throws {
+        guard let name = legacyModName(for: novel) else { return }
+        let game = novel.root.appending(path: "game")
+        let original = legacyMod(in: novel.root).appending(path: "original")
+        let package = modStore(in: root).appending(path: novel.id.uuidString)
+        if fm.fileExists(atPath: package.path) { try fm.removeItem(at: package) }
+        let payload = package.appending(path: "payload")
+        try fm.createDirectory(at: payload, withIntermediateDirectories: true)
+        let depth = game.standardizedFileURL.pathComponents.count
+        for file in GameMetadata.files(in: game, includeTranslations: true) {
+            let ext = file.pathExtension.lowercased()
+            let parts = file.standardizedFileURL.pathComponents.dropFirst(depth)
+            let vanilla = parts.reduce(original) { $0.appending(path: $1) }
+            if ext == "rpyb" { continue }
+            if ["rpyc", "pyc", "pyo"].contains(ext) {
+                let sourceExtension = ext == "rpyc" ? "rpy" : "py"
+                let source = file.deletingPathExtension().appendingPathExtension(sourceExtension)
+                let vanillaSource = vanilla.deletingPathExtension().appendingPathExtension(sourceExtension)
+                if fm.fileExists(atPath: source.path),
+                   !fm.fileExists(atPath: vanilla.path) ||
+                    !fm.contentsEqual(atPath: source.path, andPath: vanillaSource.path) { continue }
+            }
+            if fm.contentsEqual(atPath: file.path, andPath: vanilla.path) { continue }
+            let destination = parts.reduce(payload) { $0.appending(path: $1) }
+            try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fm.copyItem(at: file, to: destination)
+        }
+        try name.write(to: package.appending(path: "name"), atomically: true, encoding: .utf8)
+    }
+
+    private static func migrateLegacyMod(for novel: Novel) throws {
+        guard legacyModName(for: novel) != nil else { return }
+        try retainLegacyMod(for: novel, in: novel.root)
+        let baseline = modBaseline(in: novel.root)
+        if fm.fileExists(atPath: baseline.path) { try fm.removeItem(at: baseline) }
+        let folder = legacyMod(in: novel.root)
+        try fm.copyItem(at: folder.appending(path: "original"), to: baseline)
+        try writeMods([novel.id], in: novel.root.appending(path: "game"))
+        try? fm.removeItem(at: folder)
+    }
+
+    private static func retainMods(for novel: Novel, in staging: URL) throws {
+        let store = modStore(in: novel.root)
+        if fm.fileExists(atPath: store.path) {
+            try fm.copyItem(at: store, to: modStore(in: staging))
+        }
+        try retainLegacyMod(for: novel, in: staging)
     }
 
     private static func modPayload(in archive: Archive) throws -> [(Entry, [String])] {
@@ -582,64 +672,110 @@ enum LibraryStore {
         }.count
     }
 
-    static func installMod(_ source: URL, on novel: Novel) throws -> Int {
+    @discardableResult
+    static func installMod(_ source: URL, on novel: Novel, replacing old: UUID? = nil) throws -> Int {
+        try migrateLegacyMod(for: novel)
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
         let archive = try Archive(url: source, accessMode: .read)
-        let payload = try modPayload(in: archive)
-
-        let folder = modFolder(for: novel)
-        if installedMod(for: novel) != nil { throw ImportFailure.modInstalled }
-        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
-        let staging = folder.appending(path: "staged")
-        if fm.fileExists(atPath: staging.path) { try fm.removeItem(at: staging) }
-        defer { try? fm.removeItem(at: staging) }
+        let entries = try modPayload(in: archive)
         let game = novel.root.appending(path: "game")
-        let original = folder.appending(path: "original")
-        try fm.copyItem(at: game, to: staging)
-        var seen: Set<String> = []
-        let space = (try? staging.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+        let enabled = try enabledMods(in: game)
+        let id = UUID()
+        let store = modStore(in: novel.root)
+        let package = store.appending(path: id.uuidString)
+        let oldPackage = old.map { store.appending(path: $0.uuidString) }
+        if let oldPackage, !fm.fileExists(atPath: oldPackage.path) { throw ImportFailure.missingMod }
+        let payload = package.appending(path: "payload")
+        var installed = false
+        defer { if !installed { try? fm.removeItem(at: package) } }
+        try fm.createDirectory(at: payload, withIntermediateDirectories: true)
+        let space = (try? payload.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
             .volumeAvailableCapacityForImportantUsage ?? Int64.max
         var available = UInt64(max(0, space))
+        var seen: Set<String> = []
         var conflicts = 0
-        for (entry, parts) in payload {
+        for (entry, parts) in entries {
             guard seen.insert(identity(parts.joined(separator: "/"))).inserted else { throw ImportFailure.unsafeEntry }
             let size = UInt64(entry.uncompressedSize)
             guard size <= available else { throw ImportFailure.tooLarge }
             available -= size
-            var output = staging
-            for component in parts {
-                output = output.appending(path: component)
-                if (try? output.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true {
+            let output = parts.reduce(payload) { $0.appending(path: $1) }
+            if fm.fileExists(atPath: parts.reduce(game, { $0.appending(path: $1) }).path) { conflicts += 1 }
+            try fm.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
+            _ = try archive.extract(entry, to: output)
+        }
+        let name = source.deletingPathExtension().lastPathComponent
+        try name.write(to: package.appending(path: "name"), atomically: true, encoding: .utf8)
+
+        if let old {
+            if enabled.contains(old) {
+                try applyMods(enabled.map { $0 == old ? id : $0 }, to: novel)
+            }
+            if let oldPackage { try? fm.removeItem(at: oldPackage) }
+        } else {
+            try applyMods(enabled + [id], to: novel)
+        }
+        installed = true
+        return conflicts
+    }
+
+    static func setMod(_ id: UUID, enabled: Bool, on novel: Novel) throws {
+        try migrateLegacyMod(for: novel)
+        guard fm.fileExists(atPath: modStore(in: novel.root).appending(path: id.uuidString).path) else {
+            throw ImportFailure.missingMod
+        }
+        let current = try enabledMods(in: novel.root.appending(path: "game"))
+        guard current.contains(id) != enabled else { return }
+        try applyMods(enabled ? current + [id] : current.filter { $0 != id }, to: novel)
+    }
+
+    static func removeMod(_ id: UUID, from novel: Novel) throws {
+        try setMod(id, enabled: false, on: novel)
+        try fm.removeItem(at: modStore(in: novel.root).appending(path: id.uuidString))
+    }
+
+    private static func applyMods(_ ids: [UUID], to novel: Novel) throws {
+        let game = novel.root.appending(path: "game")
+        let baseline = modBaseline(in: novel.root)
+        if try enabledMods(in: game).isEmpty {
+            if fm.fileExists(atPath: baseline.path) { try fm.removeItem(at: baseline) }
+            try fm.copyItem(at: game, to: baseline)
+        }
+        let staged = novel.root.appending(path: ".mod-build")
+        if fm.fileExists(atPath: staged.path) { try fm.removeItem(at: staged) }
+        defer { try? fm.removeItem(at: staged) }
+        try fm.copyItem(at: baseline, to: staged)
+        for id in ids {
+            let payload = modStore(in: novel.root).appending(path: id.uuidString).appending(path: "payload")
+            try overlayMod(from: payload, into: staged)
+        }
+        try writeMods(ids, in: staged)
+        _ = try fm.replaceItemAt(game, withItemAt: staged, options: [.usingNewMetadataOnly])
+        if ids.isEmpty { try? fm.removeItem(at: baseline) }
+    }
+
+    private static func overlayMod(from payload: URL, into game: URL) throws {
+        for path in try fm.subpathsOfDirectory(atPath: payload.path) {
+            let parts = try safeParts(path)
+            let file = parts.reduce(payload) { $0.appending(path: $1) }
+            guard try file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { continue }
+            var output = game
+            for part in parts {
+                output = output.appending(path: part)
+                guard (try? output.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink != true else {
                     throw ImportFailure.unsafeEntry
                 }
             }
             if fm.fileExists(atPath: output.path) {
-                guard (try? output.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else {
+                guard try output.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
                     throw ImportFailure.unsafeEntry
                 }
-                conflicts += 1
                 try fm.removeItem(at: output)
             }
             try fm.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
-            _ = try archive.extract(entry, to: output)
+            try fm.copyItem(at: file, to: output)
         }
-        try source.deletingPathExtension().lastPathComponent.write(to: folder.appending(path: "name"), atomically: true, encoding: .utf8)
-        try fm.moveItem(at: game, to: original)
-        do { try fm.moveItem(at: staging, to: game) }
-        catch {
-            try? fm.moveItem(at: original, to: game)
-            throw error
-        }
-        return conflicts
-    }
-
-    static func removeMod(from novel: Novel) throws {
-        let folder = modFolder(for: novel)
-        let game = novel.root.appending(path: "game")
-        let original = folder.appending(path: "original")
-        _ = try fm.replaceItemAt(game, withItemAt: original, options: [.usingNewMetadataOnly])
-        try? fm.removeItem(at: folder)
     }
 
     static func diagnostics(for novel: Novel, engine: String?) -> String {
@@ -802,7 +938,12 @@ enum LibraryStore {
         guard try modConflicts(modZip, on: reinstalled) == 1,
               try installMod(modZip, on: reinstalled) == 1,
               try String(contentsOf: script, encoding: .utf8) == "modded" else { return false }
-        try removeMod(from: reinstalled)
+        guard let installed = installedMods(for: reinstalled).first, installed.enabled else { return false }
+        try setMod(installed.id, enabled: false, on: reinstalled)
+        guard try String(contentsOf: script, encoding: .utf8) == "label start:\n    return",
+              installedMods(for: reinstalled).first?.enabled == false else { return false }
+        try setMod(installed.id, enabled: true, on: reinstalled)
+        try removeMod(installed.id, from: reinstalled)
         return try String(contentsOf: script, encoding: .utf8) == "label start:\n    return"
     }
     private static func checkImportIdentity(in fixtures: URL) throws -> Bool {
@@ -844,12 +985,44 @@ enum LibraryStore {
         try delete(separate, keepingSaves: false)
         cleanup.removeLast()
 
+        // Recreate the format used by already installed mods before the update.
+        let legacy = legacyMod(in: installed.root)
+        let installedGame = installed.root.appending(path: "game")
+        try fm.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try fm.copyItem(at: installedGame, to: legacy.appending(path: "original"))
+        try "Legacy patch".write(to: legacy.appending(path: "name"), atomically: true, encoding: .utf8)
+        let story = installedGame.appending(path: "story.txt")
+        try Data("MOD1".utf8).write(to: story)
+        guard installedMods(for: installed).first?.enabled == true else { return false }
+        let archiveRoot = fixtures.appending(path: "additional-mod")
+        try fm.createDirectory(at: archiveRoot, withIntermediateDirectories: true)
+        try Data("MOD2".utf8).write(to: archiveRoot.appending(path: "story.txt"))
+        let archive = fixtures.appending(path: "extra.zip")
+        try fm.zipItem(at: archiveRoot, to: archive, shouldKeepParent: false)
+        try installMod(archive, on: installed)
+        guard installedMods(for: installed).filter(\.enabled).count == 2,
+              try String(contentsOf: story, encoding: .utf8) == "MOD2" else { return false }
+
         let updatePlan = try prepareImport(newer)
         defer { discardImport(updatePlan) }
         let updated = try finishImport(updatePlan, choice: .update(installed.id))
         guard updated.id == installed.id, updated.root == installed.root, updated.saves == installed.saves,
               try String(contentsOf: updated.root.appending(path: "game/story.txt"), encoding: .utf8) == "BBBB",
               try String(contentsOf: slot, encoding: .utf8) == "progress" else { return false }
+
+        let mods = installedMods(for: updated)
+        guard mods.count == 2, mods.allSatisfy({ !$0.enabled }),
+              let legacyPatch = mods.first(where: { $0.name == "Legacy patch" }),
+              let extra = mods.first(where: { $0.name == "extra" }) else { return false }
+        try setMod(legacyPatch.id, enabled: true, on: updated)
+        guard try String(contentsOf: story, encoding: .utf8) == "MOD1" else { return false }
+        try setMod(extra.id, enabled: true, on: updated)
+        try setMod(extra.id, enabled: false, on: updated)
+        guard try String(contentsOf: story, encoding: .utf8) == "MOD1" else { return false }
+        try installMod(archive, on: updated, replacing: extra.id)
+        guard installedMods(for: updated).first(where: { $0.name == "extra" })?.enabled == false else { return false }
+        try setMod(legacyPatch.id, enabled: false, on: updated)
+        guard try String(contentsOf: story, encoding: .utf8) == "BBBB" else { return false }
         try delete(updated)
 
         let freshPlan = try prepareImport(unrelated)

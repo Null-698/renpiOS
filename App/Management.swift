@@ -141,32 +141,49 @@ private struct SaveSlotRow<Actions: View>: View {
 
 struct ModManager: View {
     let novel: Novel
-    @State private var installed: String?
+    @Binding var working: Bool
+    @State private var mods: [LibraryStore.InstalledMod] = []
     @State private var importing = false
+    @State private var replacing: UUID?
     @State private var pending: URL?
     @State private var conflicts = 0
-    @State private var removing = false
-    @Binding var working: Bool
+    @State private var removing: LibraryStore.InstalledMod?
     @State private var message: String?
 
     var body: some View {
         ScrollView {
-            ManagementPanel(installed ?? "Install a mod", icon: "puzzlepiece.extension") {
-                if installed != nil {
-                    Label("Installed", systemImage: "checkmark.circle.fill")
-                        .font(.subheadline.weight(.medium)).foregroundStyle(amber)
-                    Button("Remove Mod", systemImage: "trash", role: .destructive) { removing = true }
-                        .buttonStyle(.glass)
+            VStack(spacing: 12) {
+                ManagementPanel("Installed mods", icon: "puzzlepiece.extension") {
+                    if mods.isEmpty {
+                        Text("No mods installed.").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    ForEach(mods) { mod in
+                        HStack {
+                            Toggle(isOn: Binding(get: { mod.enabled }, set: { enabled in
+                                run { try LibraryStore.setMod(mod.id, enabled: enabled, on: novel) }
+                            })) {
+                                Text(mod.name).lineLimit(2)
+                            }
+                            Menu {
+                                Button("Replace ZIP", systemImage: "arrow.triangle.2.circlepath") {
+                                    chooseZIP(replacing: mod.id)
+                                }
+                                Button("Remove Mod", systemImage: "trash", role: .destructive) {
+                                    removing = mod
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle").frame(width: 44, height: 44)
+                            }
+                            .accessibilityLabel("Options for \(mod.name)")
+                        }
                         .disabled(working)
-                } else {
-                    Text("Choose a ZIP from Files.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                    Button("Choose Mod ZIP", systemImage: "folder") { importing = true }
+                    }
+                    Button("Add Mod ZIP", systemImage: "plus") { chooseZIP() }
                         .buttonStyle(.glassProminent)
                         .disabled(working)
+                    if working { ProgressView().accessibilityLabel("Working on mods") }
+                    if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
                 }
-                if working { ProgressView().accessibilityLabel("Working on mod") }
-                if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -187,33 +204,44 @@ struct ModManager: View {
             case .failure(let error): message = error.localizedDescription
             }
         }
-        .confirmationDialog("Install this mod?", isPresented: Binding(
+        .confirmationDialog(replacing == nil ? "Install this mod?" : "Replace this mod?",
+                            isPresented: Binding(
             get: { pending != nil }, set: { if !$0 { pending = nil } }
         ), titleVisibility: .visible) {
-            Button("Install") {
-                if let pending {
-                    run {
-                        let replaced = try LibraryStore.installMod(pending, on: novel)
-                        return replaced == 0 ? "Mod installed." : "Mod installed. Replaced \(replaced) files."
-                    }
-                }
+            Button(replacing == nil ? "Install" : "Replace") {
+                guard let pending else { return }
+                let previous = replacing
+                run { _ = try LibraryStore.installMod(pending, on: novel, replacing: previous) }
             }
         } message: {
-            Text(conflicts == 0 ? "No existing files will be replaced." : "\(conflicts) existing files will be replaced. You can restore the original files from Mods.")
-        }
-        .confirmationDialog("Restore original files?", isPresented: $removing, titleVisibility: .visible) {
-            Button("Remove Mod", role: .destructive) {
-                run { try LibraryStore.removeMod(from: novel); return "Original files restored." }
+            if let replacing, mods.first(where: { $0.id == replacing })?.enabled == false {
+                Text("The replacement will stay disabled.")
+            } else if conflicts > 0 {
+                Text("This mod overrides \(conflicts) existing files while enabled.")
             }
         }
-        .onAppear { installed = LibraryStore.installedMod(for: novel) }
+        .confirmationDialog("Remove \(removing?.name ?? "mod")?", isPresented: Binding(
+            get: { removing != nil }, set: { if !$0 { removing = nil } }
+        ), titleVisibility: .visible) {
+            Button("Remove Mod", role: .destructive) {
+                guard let removing else { return }
+                run { try LibraryStore.removeMod(removing.id, from: novel) }
+            }
+        }
+        .onAppear { mods = LibraryStore.installedMods(for: novel) }
     }
 
-    private func run(_ action: @escaping @Sendable () throws -> String) {
+    private func chooseZIP(replacing id: UUID? = nil) {
+        replacing = id
+        importing = true
+    }
+
+    private func run(_ action: @escaping @Sendable () throws -> Void) {
         working = true
+        message = nil
         Task {
-            defer { working = false; installed = LibraryStore.installedMod(for: novel) }
-            do { message = try await Task.detached(priority: .userInitiated, operation: action).value }
+            defer { working = false; mods = LibraryStore.installedMods(for: novel) }
+            do { try await Task.detached(priority: .userInitiated, operation: action).value }
             catch { message = error.localizedDescription }
         }
     }

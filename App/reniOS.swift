@@ -16,6 +16,7 @@ final class Session {
     var isImporting = false
     var message: String?
     private(set) var importReview: LibraryStore.ImportPlan?
+    var updatedGameWithMods: Novel?
     private var pending: Novel?
     @ObservationIgnored private var coverLookups = Set<UUID>()
 
@@ -188,6 +189,9 @@ final class Session {
             }.value
             novels = LibraryStore.list()
             isImporting = false
+            if case .update = choice, !LibraryStore.installedMods(for: installed).isEmpty {
+                updatedGameWithMods = installed
+            }
             coverLookups.remove(installed.id)
             findCoverIfVerified(for: installed.id)
         } catch {
@@ -373,6 +377,7 @@ private struct LibraryScreen: View {
     @State private var importing = false
     @State private var filter = ""
     @State private var selected: Novel?
+    @State private var selectedTab: GameTab = .overview
     @State private var gameToLaunch: Novel?
     @State private var highlightedID: Novel.ID?
     @FocusState private var searching: Bool
@@ -383,6 +388,7 @@ private struct LibraryScreen: View {
         self.session = session
         self.previewTab = previewTab
         _selected = State(initialValue: previewTab == nil ? nil : session.novels.first)
+        _selectedTab = State(initialValue: previewTab ?? .overview)
     }
 
     private var visibleNovels: [Novel] {
@@ -433,7 +439,7 @@ private struct LibraryScreen: View {
             }
         }
         .sheet(item: $selected, onDismiss: launchSelectedGame) { novel in
-            NovelSheet(novel: novel, session: session, initialTab: previewTab ?? .overview) { game in
+            NovelSheet(novel: novel, session: session, initialTab: selectedTab) { game in
                 gameToLaunch = game
             }
                 .presentationDetents([.large])
@@ -443,6 +449,14 @@ private struct LibraryScreen: View {
         .sheet(item: Binding(get: { session.importReview },
                              set: { if $0 == nil { session.cancelImportReview() } })) { plan in
             ImportReviewSheet(plan: plan, choose: session.chooseImport, cancel: session.cancelImportReview)
+        }
+        .alert("Mods Disabled", isPresented: Binding(
+            get: { session.updatedGameWithMods != nil },
+            set: { if !$0 { session.updatedGameWithMods = nil } }
+        ), presenting: session.updatedGameWithMods) { game in
+            Button("Open Mods") { showDetails(game, tab: .mods) }
+        } message: { game in
+            Text("\(game.title) was updated. Your mods are still installed. Re-enable the ones you want in Mods.")
         }
         .alert("reniOS", isPresented: Binding(
             get: { session.message != nil },
@@ -757,8 +771,9 @@ private struct LibraryScreen: View {
             .disabled(session.isImporting)
     }
 
-    private func showDetails(_ game: Novel) {
+    private func showDetails(_ game: Novel, tab: GameTab = .overview) {
         searching = false
+        selectedTab = tab
         selected = game
     }
 
@@ -801,7 +816,7 @@ private struct ImportReviewSheet: View {
                     } header: {
                         Text("Matching Games")
                     } footer: {
-                        Text("Updating replaces the selected game’s files and installed mod. Its saves stay with it.")
+                        Text("Keeps your saves and disables installed mods until you re-enable them.")
                     }
                 }
                 if !plan.retainedSaves.isEmpty {
