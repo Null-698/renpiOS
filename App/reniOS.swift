@@ -35,7 +35,6 @@ final class Session {
     }
 
     func run() {
-        var testGames: [Novel] = []
         #if DEBUG
         if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--playback-probe") {
             let engines = ProcessInfo.processInfo.arguments.dropFirst(index + 1)
@@ -50,13 +49,13 @@ final class Session {
                 for (number, version) in engines.enumerated() {
                     var game = try LibraryStore.install(sample, title: "Playback Probe \(number + 1)")
                     game.engineOverride = version
-                    testGames.append(game)
+                    if try play(game, probe: true) != 0 { return }
+                    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
                 }
-                novels = LibraryStore.list()
             } catch {
                 NSLog("reniOS playback probe: %@", error.localizedDescription)
-                return
             }
+            return
         }
         #endif
 
@@ -93,31 +92,20 @@ final class Session {
 
         // SDL owns UIApplication. Let UIKit service its normal run loop while
         // its main-function callback waits for the library to select a game.
-        let probing = !testGames.isEmpty
-        if probing {
-            // Let the library scene become active before simulating its Play action.
-            RunLoop.current.run(until: Date(timeIntervalSinceNow: 1))
-        }
-        var nextTest = testGames.makeIterator()
         while true {
-            guard let game = pending ?? nextTest.next() else {
+            guard let game = pending else {
                 _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
                 continue
             }
             pending = nil
             window.isHidden = true
             do {
-                let status = try play(game, probe: probing)
-                if probing && status != 0 { return }
+                _ = try play(game, probe: false)
             } catch {
                 message = error.localizedDescription
-                if probing { return }
             }
             novels = LibraryStore.list()
             window.makeKeyAndVisible()
-            if probing {
-                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
-            }
         }
     }
 

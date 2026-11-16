@@ -96,8 +96,11 @@ probe_playback() {
   rm -f "$cache"/renios-{library.json,quit.json,quit.request,controls.json,controls.request}
 
   echo "Testing Ren’Py session: $*"
-  bounded 90 xcrun simctl launch --terminate-running-process --stdout="$PWD/out/diagnostics/$label-stdout.log" \
-    --stderr="$PWD/out/diagnostics/$label-stderr.log" "$udid" "$bundle" --playback-probe "$@" || return
+  local launch
+  launch=$(bounded 90 xcrun simctl launch --terminate-running-process --stdout="$PWD/out/diagnostics/$label-stdout.log" \
+    --stderr="$PWD/out/diagnostics/$label-stderr.log" "$udid" "$bundle" --playback-probe "$@") || return
+  echo "$launch"
+  local app_pid=${launch##*: }
   wait_for_probe "$cache/renios-library.json" || return
   cp "$cache/renios-library.json" "out/library-probe-$label.json" || return
   jq -e '.importsAndSaves == true' "out/library-probe-$label.json" || return
@@ -120,7 +123,12 @@ probe_playback() {
     fi
 
     touch "$cache/renios-quit.request" || return
-    wait_for_probe "$quit" || return
+    if ! wait_for_probe "$quit"; then
+      if [[ "$app_pid" =~ ^[0-9]+$ ]] && kill -0 "$app_pid" 2>/dev/null; then
+        bounded 15 /usr/bin/sample "$app_pid" 2 10 -file "$PWD/out/diagnostics/$label-sample.log" || true
+      fi
+      return 1
+    fi
     result="out/quit-probe-$label-$index.json"
     mv "$quit" "$result" || return
     cat "$result"

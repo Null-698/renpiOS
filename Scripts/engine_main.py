@@ -45,6 +45,15 @@ def play():
         os.environ.pop("RENIOS_PLAYBACK_PROBE", None)
         os.environ.pop("RENIOS_PROBE_SAVES", None)
 
+    diagnostic = None
+    if probe:
+        try:
+            import faulthandler
+            faulthandler.dump_traceback_later(20)
+            diagnostic = faulthandler
+        except (ImportError, AttributeError, RuntimeError):
+            pass
+
     original_environment = dict(os.environ)
     original_modules = set(sys.modules)
     original_excepthook = sys.excepthook
@@ -67,6 +76,8 @@ def play():
         if status.code:
             raise RuntimeError("Ren'Py stopped with status {!r}".format(status.code))
     finally:
+        if diagnostic is not None:
+            diagnostic.cancel_dump_traceback_later()
         sys.path[:] = session_path
         sys.excepthook = original_excepthook
         os.chdir(original_directory)
