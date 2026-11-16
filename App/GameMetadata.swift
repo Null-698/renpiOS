@@ -43,12 +43,13 @@ enum GameMetadata {
         return displayTitle(value)
     }
 
-    static func files(in root: URL) -> [URL] {
+    static func files(in root: URL, includeTranslations: Bool = false) -> [URL] {
         guard let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey],
                 options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
+        let excludedFolders = ["cache", "saves", "__pycache__"] + (includeTranslations ? [] : ["tl"])
         var result: [URL] = []
         for case let file as URL in files {
-            if ["cache", "saves", "__pycache__", "tl"].contains(file.lastPathComponent.lowercased()),
+            if excludedFolders.contains(file.lastPathComponent.lowercased()),
                (try? file.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
                 files.skipDescendants()
                 continue
@@ -134,6 +135,39 @@ enum GameMetadata {
                     hash.update(data: try handle.read(upToCount: limit) ?? Data())
                 }
             } catch { return nil }
+        }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func contentDigest(in folder: URL) throws -> String {
+        let files = files(in: folder, includeTranslations: true)
+        let paths = Set(files.map(\.path))
+        let depth = folder.standardizedFileURL.pathComponents.count
+        var hash = SHA256()
+        for file in files {
+            let ext = file.pathExtension.lowercased()
+            let source = file.deletingPathExtension()
+            if ext == "rpyb" ||
+                (ext == "rpyc" && paths.contains(source.appendingPathExtension("rpy").path)) ||
+                (["pyc", "pyo"].contains(ext) && paths.contains(source.appendingPathExtension("py").path)) {
+                continue
+            }
+            let handle = try FileHandle(forReadingFrom: file)
+            defer { try? handle.close() }
+            let size = try handle.seekToEnd()
+            try handle.seek(toOffset: 0)
+            let path = file.standardizedFileURL.pathComponents.dropFirst(depth).joined(separator: "/")
+            hash.update(data: Data((path + "\0" + String(size) + "\0").utf8))
+            var remaining = size
+            while remaining > 0 {
+                let bytes = try handle.read(upToCount: Int(min(remaining, 1_048_576))) ?? Data()
+                guard !bytes.isEmpty else { throw CocoaError(.fileReadCorruptFile) }
+                hash.update(data: bytes)
+                remaining -= UInt64(bytes.count)
+            }
+            if let extra = try handle.read(upToCount: 1), !extra.isEmpty {
+                throw CocoaError(.fileReadCorruptFile)
+            }
         }
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }

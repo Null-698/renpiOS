@@ -15,6 +15,7 @@ final class Session {
     var novels = LibraryStore.list()
     var isImporting = false
     var message: String?
+    private(set) var importReview: LibraryStore.ImportPlan?
     private var pending: Novel?
     @ObservationIgnored private var coverLookups = Set<UUID>()
 
@@ -36,6 +37,7 @@ final class Session {
     }
 
     func run() {
+        LibraryStore.discardAbandonedImports()
         #if DEBUG
         if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--playback-probe") {
             let engines = ProcessInfo.processInfo.arguments.dropFirst(index + 1)
@@ -138,17 +140,59 @@ final class Session {
         guard !isImporting else { return }
         isImporting = true
         Task {
-            defer { isImporting = false }
             do {
-                let installed = try await Task.detached(priority: .userInitiated) {
-                    if let source { return try LibraryStore.install(source) }
-                    return try LibraryStore.installDemo()
-                }.value
-                novels = LibraryStore.list()
-                findCoverIfVerified(for: installed.id)
+                if let source {
+                    let plan = try await Task.detached(priority: .userInitiated) {
+                        try LibraryStore.prepareImport(source)
+                    }.value
+                    if plan.needsReview {
+                        importReview = plan
+                        return
+                    }
+                    await completeImport(plan, choice: plan.exactSaves.map { .attach($0.id) } ?? .fresh)
+                } else {
+                    let installed = try await Task.detached(priority: .userInitiated) {
+                        try LibraryStore.installDemo()
+                    }.value
+                    novels = LibraryStore.list()
+                    isImporting = false
+                    findCoverIfVerified(for: installed.id)
+                }
             } catch {
+                isImporting = false
                 message = error.localizedDescription
             }
+        }
+    }
+
+    func chooseImport(_ choice: LibraryStore.ImportChoice) {
+        guard let plan = importReview else { return }
+        importReview = nil
+        Task { await completeImport(plan, choice: choice) }
+    }
+
+    func cancelImportReview() {
+        guard let plan = importReview else { return }
+        importReview = nil
+        Task {
+            await Task.detached(priority: .utility) { LibraryStore.discardImport(plan) }.value
+            isImporting = false
+        }
+    }
+
+    private func completeImport(_ plan: LibraryStore.ImportPlan, choice: LibraryStore.ImportChoice) async {
+        do {
+            let installed = try await Task.detached(priority: .userInitiated) {
+                defer { LibraryStore.discardImport(plan) }
+                return try LibraryStore.finishImport(plan, choice: choice)
+            }.value
+            novels = LibraryStore.list()
+            isImporting = false
+            coverLookups.remove(installed.id)
+            findCoverIfVerified(for: installed.id)
+        } catch {
+            isImporting = false
+            message = error.localizedDescription
         }
     }
 
@@ -159,7 +203,7 @@ final class Session {
         Task { [weak self] in
             guard let result = try? await CoverLookup.match(title: game.title, developer: developer),
                   let image = result.image, let data = try? await CoverLookup.download(image.url),
-                  let self, let current = novels.first(where: { $0.id == id }),
+                  let self, !isImporting, let current = novels.first(where: { $0.id == id }),
                   current.title == game.title, current.developer == game.developer,
                   current.cover == nil, current.automaticCoverDisabled != true else { return }
             try? setCover(data, for: current)
@@ -395,6 +439,10 @@ private struct LibraryScreen: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
                 .presentationCompactAdaptation(.none)
+        }
+        .sheet(item: Binding(get: { session.importReview },
+                             set: { if $0 == nil { session.cancelImportReview() } })) { plan in
+            ImportReviewSheet(plan: plan, choose: session.chooseImport, cancel: session.cancelImportReview)
         }
         .alert("reniOS", isPresented: Binding(
             get: { session.message != nil },
@@ -718,6 +766,68 @@ private struct LibraryScreen: View {
         guard let game = gameToLaunch else { return }
         gameToLaunch = nil
         session.launch(game)
+    }
+}
+
+private struct ImportReviewSheet: View {
+    let plan: LibraryStore.ImportPlan
+    let choose: (LibraryStore.ImportChoice) -> Void
+    let cancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text(plan.incoming.title).font(.headline)
+                    Button(plan.matchingGames.isEmpty ? "Start Fresh" : "Install Separately",
+                           systemImage: "plus.square.on.square") { choose(.fresh) }
+                } footer: {
+                    Text("Creates a new game and save folder.")
+                }
+
+                if !plan.matchingGames.isEmpty {
+                    Section {
+                        ForEach(plan.matchingGames) { game in
+                            Button {
+                                choose(.update(game.id))
+                            } label: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Update \(game.title)")
+                                    Text(game.root.lastPathComponent)
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    } header: {
+                        Text("Matching Games")
+                    } footer: {
+                        Text("Updating replaces the selected game’s files and installed mod. Its saves stay with it.")
+                    }
+                }
+                if !plan.retainedSaves.isEmpty {
+                    Section("Retained Saves") {
+                        ForEach(plan.retainedSaves) { save in
+                            Button {
+                                choose(.attach(save.id))
+                            } label: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Use Saves for \(save.title)")
+                                    Text(save.folder.lastPathComponent)
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Review Import")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: cancel) }
+            }
+        }
+        .tint(amber)
+        .presentationDragIndicator(.visible)
     }
 }
 

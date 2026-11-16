@@ -19,6 +19,7 @@ struct Novel: Codable, Identifiable, Equatable, Sendable {
     var titleIsManual: Bool?
     var gameKeys: [String]?
     var fingerprint: String?
+    var contentDigest: String?
     var localCover: String?
     var coverScanned: Bool?
     var developer: String?
@@ -47,9 +48,13 @@ struct Novel: Codable, Identifiable, Equatable, Sendable {
 enum ImportFailure: LocalizedError {
     case missingGame, unsafeEntry, tooLarge, missingDemo, missingSaves, missingMod, modInstalled
     case duplicate(String)
+    case importChoiceRequired
+    case saveFolderInUse
 
     var errorDescription: String? {
         switch self {
+        case .importChoiceRequired: "Review the matching games or saves before installing."
+        case .saveFolderInUse: "This save folder belongs to another installed game."
         case .duplicate(let title): "\(title) is already in your library."
         case .missingGame: "No Ren’Py game folder was found."
         case .unsafeEntry: "The archive contains an unsupported file path."
@@ -71,6 +76,32 @@ enum LibraryStore {
     private struct SaveOwner: Codable {
         let game: UUID
         let identity: String
+        var title: String?
+        var gameKeys: [String]?
+        var contentDigest: String?
+    }
+
+    struct RetainedSave: Identifiable, Sendable {
+        let folder: URL
+        let owner: UUID
+        let title: String
+        var id: URL { folder }
+    }
+
+    struct ImportPlan: Identifiable, Sendable {
+        let incoming: Novel
+        let staging: URL
+        let matchingGames: [Novel]
+        let retainedSaves: [RetainedSave]
+        let exactSaves: RetainedSave?
+        var id: UUID { incoming.id }
+        var needsReview: Bool { !matchingGames.isEmpty || (!retainedSaves.isEmpty && exactSaves == nil) }
+    }
+
+    enum ImportChoice: Sendable {
+        case fresh
+        case update(Novel.ID)
+        case attach(RetainedSave.ID)
     }
 
     private static func owner(at folder: URL) -> SaveOwner? {
@@ -80,7 +111,8 @@ enum LibraryStore {
 
     private static func registerSaves(for novel: Novel) throws {
         try fm.createDirectory(at: novel.saves, withIntermediateDirectories: true)
-        let record = SaveOwner(game: novel.id, identity: novel.saveIdentity ?? identity(novel.title))
+        let record = SaveOwner(game: novel.id, identity: novel.saveIdentity ?? identity(novel.title),
+                               title: novel.title, gameKeys: novel.gameKeys, contentDigest: novel.contentDigest)
         try JSONEncoder().encode(record).write(to: novel.saves.appending(path: ".renios-save.json"), options: .atomic)
     }
 
@@ -254,7 +286,15 @@ enum LibraryStore {
         }
     }
 
-    static func install(_ source: URL, title override: String? = nil, checkDuplicates: Bool = true) throws -> Novel {
+    static func install(_ source: URL, title: String? = nil, checkDuplicates: Bool = true) throws -> Novel {
+        let plan = try prepareImport(source, title: title, checkDuplicates: checkDuplicates)
+        defer { discardImport(plan) }
+        guard !plan.needsReview else { throw ImportFailure.importChoiceRequired }
+        return try finishImport(plan, choice: plan.exactSaves.map { .attach($0.id) } ?? .fresh)
+    }
+
+    static func prepareImport(_ source: URL, title override: String? = nil,
+                              checkDuplicates: Bool = true) throws -> ImportPlan {
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
 
@@ -262,7 +302,8 @@ enum LibraryStore {
         var novel = Novel(id: UUID(), title: override ?? filename, imported: .now)
         let temp = games.appending(path: ".import-\(novel.id.uuidString)")
         try fm.createDirectory(at: temp, withIntermediateDirectories: true)
-        defer { try? fm.removeItem(at: temp) }
+        var prepared = false
+        defer { if !prepared { try? fm.removeItem(at: temp) } }
         let game = temp.appending(path: "game")
         var apkTitle: String?
         var apkIdentifier: String?
@@ -295,35 +336,109 @@ enum LibraryStore {
         novel.coverScanned = true
         novel.developer = metadata["config.developer"]
 
-        let existing = folders(in: games).compactMap { readNovel(in: $0) }.map(updateMetadata)
-        let keys = Set(novel.gameKeys ?? [])
-        if checkDuplicates, let duplicate = existing.first(where: { game in
-            (novel.fingerprint != nil && game.fingerprint == novel.fingerprint) ||
-                !keys.isDisjoint(with: game.gameKeys ?? [])
-        }) {
-            throw ImportFailure.duplicate(duplicate.title)
-        }
+        novel.contentDigest = try GameMetadata.contentDigest(in: game)
         let key = identity(override ?? apkIdentifier ?? metadata["build.name"] ?? filename)
         novel.saveIdentity = key
-        let installed = Set(existing.map(\.id))
-        let retained = folders(in: saves).filter { folder in
-            guard let record = owner(at: folder) else { return false }
-            return record.identity == key && !installed.contains(record.game)
+        var matchingGames: [Novel] = []
+        var retainedSaves: [RetainedSave] = []
+        var exactSaves: [RetainedSave] = []
+        if checkDuplicates {
+            let existing = folders(in: games).compactMap { readNovel(in: $0) }.map(updateMetadata)
+            let keys = Set(novel.gameKeys ?? [])
+            for current in existing {
+                let sharedID = !keys.isDisjoint(with: current.gameKeys ?? [])
+                let similarFiles = novel.fingerprint != nil && novel.fingerprint == current.fingerprint
+                var digest = current.contentDigest
+                if digest == nil, sharedID || similarFiles {
+                    let original = modFolder(for: current).appending(path: "original")
+                    let source = fm.fileExists(atPath: original.path) ? original : current.root.appending(path: "game")
+                    digest = try? GameMetadata.contentDigest(in: source)
+                }
+                if let digest, digest == novel.contentDigest { throw ImportFailure.duplicate(current.title) }
+                if sharedID { matchingGames.append(current) }
+            }
+            let installedIDs = Set(existing.map(\.id))
+            let installedFolders = Set(existing.map { $0.saves.standardizedFileURL.path })
+            for folder in folders(in: saves) {
+                guard let record = owner(at: folder), !installedIDs.contains(record.game),
+                      !installedFolders.contains(folder.standardizedFileURL.path) else { continue }
+                let match = RetainedSave(folder: folder, owner: record.game,
+                                         title: record.title ?? folder.lastPathComponent)
+                if let digest = record.contentDigest, digest == novel.contentDigest {
+                    exactSaves.append(match)
+                    retainedSaves.append(match)
+                } else if record.identity == key || !keys.isDisjoint(with: record.gameKeys ?? []) {
+                    retainedSaves.append(match)
+                }
+            }
         }
-        if retained.count == 1, let file = retained.first {
-            novel.saveFolder = file.lastPathComponent
-        } else {
-            novel.saveFolder = folderName(for: novel.title, in: saves)
+        prepared = true
+        return ImportPlan(incoming: novel, staging: temp,
+                          matchingGames: matchingGames.sorted { $0.root.path < $1.root.path },
+                          retainedSaves: retainedSaves.sorted { $0.folder.path < $1.folder.path },
+                          exactSaves: exactSaves.count == 1 ? exactSaves.first : nil)
+    }
+
+    static func discardImport(_ plan: ImportPlan) {
+        try? fm.removeItem(at: plan.staging)
+    }
+
+    static func discardAbandonedImports() {
+        let entries = (try? fm.contentsOfDirectory(at: games, includingPropertiesForKeys: nil)) ?? []
+        for entry in entries where entry.lastPathComponent.hasPrefix(".import-") {
+            guard UUID(uuidString: String(entry.lastPathComponent.dropFirst(8))) != nil else { continue }
+            try? fm.removeItem(at: entry)
         }
-        novel.gameFolder = folderName(for: novel.title, in: games)
-        try write(novel, to: temp)
-        try fm.moveItem(at: temp, to: novel.root)
-        do { try registerSaves(for: novel) }
+    }
+
+    static func finishImport(_ plan: ImportPlan, choice: ImportChoice) throws -> Novel {
+        let existing = folders(in: games).compactMap { readNovel(in: $0) }
+        var incoming = plan.incoming
+        switch choice {
+        case .update(let id):
+            guard plan.matchingGames.contains(where: { $0.id == id }),
+                  var updated = existing.first(where: { $0.id == id }) else { throw CocoaError(.fileNoSuchFile) }
+            let current = updated
+            guard !existing.contains(where: { $0.id != id && $0.saves.standardizedFileURL.path == updated.saves.standardizedFileURL.path }),
+                  owner(at: updated.saves).map({ $0.game == id }) ?? true else {
+                throw ImportFailure.saveFolderInUse
+            }
+            if updated.titleIsManual != true { updated.title = incoming.title }
+            updated.detectedEngine = incoming.detectedEngine
+            updated.gameKeys = incoming.gameKeys
+            updated.fingerprint = incoming.fingerprint
+            updated.contentDigest = incoming.contentDigest
+            updated.localCover = incoming.localCover
+            updated.coverScanned = incoming.coverScanned
+            updated.developer = incoming.developer
+            if let cover = current.customCover, fm.fileExists(atPath: cover.path) {
+                try fm.copyItem(at: cover, to: plan.staging.appending(path: cover.lastPathComponent))
+            }
+            try write(updated, to: plan.staging)
+            _ = try fm.replaceItemAt(current.root, withItemAt: plan.staging, options: [.usingNewMetadataOnly])
+            try? registerSaves(for: updated)
+            return updated
+
+        case .attach(let folder):
+            guard let candidate = plan.retainedSaves.first(where: { $0.id == folder }),
+                  owner(at: folder)?.game == candidate.owner,
+                  !existing.contains(where: { $0.id == candidate.owner || $0.saves.standardizedFileURL.path == folder.standardizedFileURL.path }) else {
+                throw ImportFailure.saveFolderInUse
+            }
+            incoming.saveFolder = folder.lastPathComponent
+
+        case .fresh:
+            incoming.saveFolder = folderName(for: incoming.title, in: saves)
+        }
+        incoming.gameFolder = folderName(for: incoming.title, in: games)
+        try write(incoming, to: plan.staging)
+        try fm.moveItem(at: plan.staging, to: incoming.root)
+        do { try registerSaves(for: incoming) }
         catch {
-            try? fm.removeItem(at: novel.root)
+            try? fm.removeItem(at: incoming.root)
             throw error
         }
-        return novel
+        return incoming
     }
 
     private static func refreshSample(for novel: Novel) {
@@ -618,6 +733,8 @@ enum LibraryStore {
             try Data(contents.utf8).write(to: output)
         }
 
+        guard try checkImportIdentity(in: fixtures) else { return false }
+
         let desktop = fixtures.appending(path: "desktop")
         try add("version = '8.3.4.25010101'", at: "Novel/renpy/vc_version.py", in: desktop)
         try add("label start:\n    return", at: "Novel/game/script.rpy", in: desktop)
@@ -687,6 +804,71 @@ enum LibraryStore {
               try String(contentsOf: script, encoding: .utf8) == "modded" else { return false }
         try removeMod(from: reinstalled)
         return try String(contentsOf: script, encoding: .utf8) == "label start:\n    return"
+    }
+    private static func checkImportIdentity(in fixtures: URL) throws -> Bool {
+        let token = UUID().uuidString
+        let title = "Identity Test " + token
+        func source(_ parent: String, bytes: String) throws -> URL {
+            let root = fixtures.appending(path: parent).appending(path: "SameArchive")
+            let game = root.appending(path: "game")
+            try fm.createDirectory(at: game, withIntermediateDirectories: true)
+            let script = "define config.name = \"\(title)\"\ndefine config.save_directory = \"\(token)\"\nlabel start:\n    return"
+            try Data(script.utf8).write(to: game.appending(path: "script.rpy"))
+            try Data(bytes.utf8).write(to: game.appending(path: "story.txt"))
+            return root
+        }
+
+        let first = try source("first", bytes: "AAAA")
+        let newer = try source("newer", bytes: "BBBB")
+        let unrelated = try source("unrelated", bytes: "CCCC")
+        var cleanup: [Novel] = []
+        defer {
+            for game in cleanup.reversed() {
+                if fm.fileExists(atPath: game.root.path) { try? delete(game, keepingSaves: false) }
+            }
+            if let first = cleanup.first { try? fm.removeItem(at: first.saves) }
+        }
+
+        let installed = try install(first)
+        cleanup.append(installed)
+        let slot = installed.saves.appending(path: "progress.save")
+        try Data("progress".utf8).write(to: slot)
+
+        let separatePlan = try prepareImport(newer)
+        defer { discardImport(separatePlan) }
+        guard separatePlan.matchingGames.map(\.id) == [installed.id] else { return false }
+        let separate = try finishImport(separatePlan, choice: .fresh)
+        cleanup.append(separate)
+        guard separate.saves != installed.saves,
+              !fm.fileExists(atPath: separate.saves.appending(path: "progress.save").path) else { return false }
+        try delete(separate, keepingSaves: false)
+        cleanup.removeLast()
+
+        let updatePlan = try prepareImport(newer)
+        defer { discardImport(updatePlan) }
+        let updated = try finishImport(updatePlan, choice: .update(installed.id))
+        guard updated.id == installed.id, updated.root == installed.root, updated.saves == installed.saves,
+              try String(contentsOf: updated.root.appending(path: "game/story.txt"), encoding: .utf8) == "BBBB",
+              try String(contentsOf: slot, encoding: .utf8) == "progress" else { return false }
+        try delete(updated)
+
+        let freshPlan = try prepareImport(unrelated)
+        defer { discardImport(freshPlan) }
+        guard freshPlan.needsReview, freshPlan.exactSaves == nil,
+              freshPlan.retainedSaves.map({ $0.folder.path }) == [installed.saves.path] else { return false }
+        let fresh = try finishImport(freshPlan, choice: .fresh)
+        cleanup.append(fresh)
+        guard fresh.saves != installed.saves, fm.fileExists(atPath: slot.path),
+              !fm.fileExists(atPath: fresh.saves.appending(path: "progress.save").path) else { return false }
+        try delete(fresh, keepingSaves: false)
+        cleanup.removeLast()
+
+        let attachPlan = try prepareImport(unrelated)
+        defer { discardImport(attachPlan) }
+        guard let retained = attachPlan.retainedSaves.first else { return false }
+        let attached = try finishImport(attachPlan, choice: .attach(retained.id))
+        cleanup.append(attached)
+        return attached.saves.path == installed.saves.path && fm.fileExists(atPath: slot.path)
     }
     #endif
 
