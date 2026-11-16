@@ -16,21 +16,36 @@ struct Novel: Codable, Identifiable, Equatable, Sendable {
 
     var root: URL { LibraryStore.games.appending(path: gameFolder ?? id.uuidString, directoryHint: .isDirectory) }
     var saves: URL { LibraryStore.saves.appending(path: saveFolder ?? id.uuidString, directoryHint: .isDirectory) }
+    var titleIsManual: Bool?
+    var gameKeys: [String]?
+    var fingerprint: String?
+    var localCover: String?
+    var coverScanned: Bool?
+    var developer: String?
+    var coverOverride: UUID?
+
+    var customCover: URL? { coverOverride.map { root.appending(path: ".renios-cover-\($0.uuidString).jpg") } }
+
     var cover: URL? {
-        let game = root.appending(path: "game")
-        for filename in ["cover.png", "cover.jpg", "gui/main_menu.png", "gui/main_menu.jpg"] {
-            let candidate = game.appending(path: filename)
-            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        let fm = FileManager.default
+        if let customCover, fm.fileExists(atPath: customCover.path) { return customCover }
+        if let localCover, !localCover.hasPrefix("/"),
+           !localCover.split(separator: "/").contains("..") {
+            let candidate = root.appending(path: "game").appending(path: localCover)
+            if fm.fileExists(atPath: candidate.path) { return candidate }
         }
-        return nil
+        let cached = root.appending(path: ".renios-archive-cover")
+        return fm.fileExists(atPath: cached.path) ? cached : nil
     }
 }
 
 enum ImportFailure: LocalizedError {
     case missingGame, unsafeEntry, tooLarge, missingDemo, missingSaves, missingMod, modInstalled
+    case duplicate(String)
 
     var errorDescription: String? {
         switch self {
+        case .duplicate(let title): "\(title) is already in your library."
         case .missingGame: "No Ren’Py game folder was found."
         case .unsafeEntry: "The archive contains an unsupported file path."
         case .tooLarge: "The game is too large for the available storage."
@@ -83,7 +98,7 @@ enum LibraryStore {
     static func list() -> [Novel] {
         folders(in: games).compactMap { folder -> Novel? in
             guard let novel = readNovel(in: folder) else { return nil }
-            let updated = migrate(novel)
+            let updated = updateMetadata(migrate(novel))
             recoverMod(for: updated)
             refreshSample(for: updated)
             return updated
@@ -160,6 +175,60 @@ enum LibraryStore {
         return novel
     }
 
+    private static func updateMetadata(_ original: Novel) -> Novel {
+        var novel = original
+        if novel.coverScanned != true {
+            let game = novel.root.appending(path: "game")
+            let files = GameMetadata.files(in: game)
+            let metadata = GameMetadata.declarations(in: files)
+            if novel.titleIsManual == nil {
+                novel.titleIsManual = !GameMetadata.machineTitle(novel.title)
+                    && GameMetadata.filenameTitle(novel.title) == novel.title
+            }
+            if novel.titleIsManual != true, let title = GameMetadata.displayTitle(metadata["config.name"]) {
+                novel.title = title
+            }
+            novel.gameKeys = GameMetadata.identityKeys(package: nil, save: metadata["config.save_directory"],
+                build: metadata["build.name"], title: metadata["config.name"])
+            novel.fingerprint = GameMetadata.fingerprint(files, in: game)
+            novel.localCover = GameMetadata.localCover(files: files, in: game, declarations: metadata)
+            novel.developer = metadata["config.developer"]
+            novel.coverScanned = true
+        }
+        if novel.localCover == nil, novel.coverOverride == nil {
+            let archived = novel.root.appending(path: ".renios-archive-cover")
+            if fm.fileExists(atPath: archived.path), !GameMetadata.validImage(archived) {
+                try? fm.removeItem(at: archived)
+            }
+        }
+        if let data = try? Data(contentsOf: novel.root.appending(path: ".renios-runtime.json")),
+           let metadata = try? JSONDecoder().decode(GameMetadata.Runtime.self, from: data) {
+            if novel.titleIsManual != true, let title = GameMetadata.displayTitle(metadata.title) {
+                novel.title = title
+            }
+            if let developer = GameMetadata.displayTitle(metadata.developer) { novel.developer = developer }
+            let keys = GameMetadata.identityKeys(package: nil, save: metadata.saveDirectory,
+                build: metadata.buildName, title: metadata.title)
+            novel.gameKeys = Array(Set((novel.gameKeys ?? []) + keys)).sorted()
+        }
+        if novel != original { try? write(novel, to: novel.root) }
+        return novel
+    }
+
+    static func setCover(_ data: Data?, for novel: Novel) throws {
+        var updated = novel
+        updated.coverOverride = data.map { _ in UUID() }
+        if let data, let url = updated.customCover {
+            try data.write(to: url, options: .atomic)
+        }
+        do { try write(updated, to: updated.root) }
+        catch {
+            if let url = updated.customCover { try? fm.removeItem(at: url) }
+            throw error
+        }
+        if let old = novel.customCover { try? fm.removeItem(at: old) }
+    }
+
     static func recordPlay(_ novel: Novel) throws {
         var updated = novel
         updated.lastPlayed = .now
@@ -176,7 +245,7 @@ enum LibraryStore {
         }
     }
 
-    static func install(_ source: URL, title override: String? = nil) throws -> Novel {
+    static func install(_ source: URL, title override: String? = nil, checkDuplicates: Bool = true) throws -> Novel {
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
 
@@ -188,6 +257,7 @@ enum LibraryStore {
         let game = temp.appending(path: "game")
         var apkTitle: String?
         var apkIdentifier: String?
+        var projectName: String?
         try fm.createDirectory(at: game, withIntermediateDirectories: true)
 
         if try source.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true {
@@ -198,13 +268,35 @@ enum LibraryStore {
             novel.detectedEngine = metadata.engine
             apkTitle = metadata.title
             apkIdentifier = metadata.identifier
+            projectName = metadata.project
         }
 
         guard containsScripts(in: game) else { throw ImportFailure.missingGame }
-        novel.title = override ?? declaration("config.name", in: game) ?? apkTitle ?? filename
-        let key = identity(override ?? apkIdentifier ?? declaration("build.name", in: game) ?? filename)
+        let files = GameMetadata.files(in: game)
+        let metadata = GameMetadata.declarations(in: files)
+        let scriptTitle = GameMetadata.displayTitle(metadata["config.name"])
+        novel.title = override ?? scriptTitle ?? GameMetadata.displayTitle(apkTitle)
+            ?? GameMetadata.filenameTitle(projectName ?? filename) ?? GameMetadata.filenameTitle(filename)
+            ?? GameMetadata.filenameTitle(metadata["build.name"] ?? "") ?? filename
+        novel.titleIsManual = override != nil
+        novel.fingerprint = GameMetadata.fingerprint(files, in: game)
+        novel.gameKeys = GameMetadata.identityKeys(package: apkIdentifier, save: metadata["config.save_directory"],
+                                                 build: metadata["build.name"], title: scriptTitle)
+        novel.localCover = GameMetadata.localCover(files: files, in: game, declarations: metadata)
+        novel.coverScanned = true
+        novel.developer = metadata["config.developer"]
+
+        let existing = folders(in: games).compactMap { readNovel(in: $0) }.map(updateMetadata)
+        let keys = Set(novel.gameKeys ?? [])
+        if checkDuplicates, let duplicate = existing.first(where: { game in
+            (novel.fingerprint != nil && game.fingerprint == novel.fingerprint) ||
+                !keys.isDisjoint(with: game.gameKeys ?? [])
+        }) {
+            throw ImportFailure.duplicate(duplicate.title)
+        }
+        let key = identity(override ?? apkIdentifier ?? metadata["build.name"] ?? filename)
         novel.saveIdentity = key
-        let installed = Set(folders(in: games).compactMap { readNovel(in: $0)?.id })
+        let installed = Set(existing.map(\.id))
         let retained = folders(in: saves).filter { folder in
             guard let record = owner(at: folder) else { return false }
             return record.identity == key && !installed.contains(record.game)
@@ -250,6 +342,7 @@ enum LibraryStore {
         guard !title.isEmpty, title != novel.title else { return }
         var updated = novel
         updated.title = title
+        updated.titleIsManual = true
         updated.gameFolder = folderName(for: title, in: games)
         try write(updated, to: novel.root)
         try fm.moveItem(at: novel.root, to: updated.root)
@@ -527,6 +620,13 @@ enum LibraryStore {
             try? delete(novel)
             try? fm.removeItem(at: novel.saves)
         }
+        let copy = fixtures.appending(path: "renamed-copy.zip")
+        try fm.copyItem(at: zip, to: copy)
+        do {
+            let copy = try install(copy)
+            try? delete(copy, keepingSaves: false)
+            return false
+        } catch ImportFailure.duplicate {}
 
         let android = fixtures.appending(path: "android")
         try add("label start:\n    return", at: "assets/x-game/x-script.rpy", in: android)
@@ -680,7 +780,7 @@ enum LibraryStore {
     }
 
     private static func importArchive(_ source: URL, into destination: URL)
-        throws -> (engine: String?, title: String?, identifier: String?) {
+        throws -> (engine: String?, title: String?, identifier: String?, project: String?) {
         let archive = try Archive(url: source, accessMode: .read)
         let isAPK = source.pathExtension.lowercased() == "apk"
         var entries: [(Entry, [String])] = []
@@ -732,7 +832,7 @@ enum LibraryStore {
             _ = try archive.extract(entry, to: output)
         }
         let detected = detectInArchive(archive, entries: entries, project: Array(prefix.dropLast()), android: isAPK)
-        guard isAPK else { return (detected, nil, nil) }
+        guard isAPK else { return (detected, nil, nil, prefix.dropLast().last) }
         func androidFile(_ path: String, limit: Int) -> Data? {
             guard let entry = entries.first(where: { $0.1 == [path] })?.0,
                   UInt64(entry.uncompressedSize) <= UInt64(limit) else { return nil }
@@ -744,7 +844,7 @@ enum LibraryStore {
         let details = androidFile("AndroidManifest.xml", limit: 524_288).map { manifest in
             APKTitle.read(manifest: manifest) { androidFile("resources.arsc", limit: 16 * 1024 * 1024) }
         }
-        return (detected ?? detectInAndroidPrivateData(archive, entries: entries), details?.title, details?.identifier)
+        return (detected ?? detectInAndroidPrivateData(archive, entries: entries), details?.title, details?.identifier, nil)
     }
 
     private static func importDirectory(_ source: URL, into destination: URL) throws {

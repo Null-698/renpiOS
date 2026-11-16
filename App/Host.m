@@ -26,6 +26,7 @@ typedef int (*EnginePushEvent)(void *);
 typedef void (*LegacyEventPump)(int);
 
 static EnginePushEvent activePushEvent;
+static BOOL activeSDL3;
 static void (*activeStartKeyboard)(void);
 
 static void startDefaultKeyboard(void) {
@@ -325,6 +326,7 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
         return -2;
     }
     activePushEvent = push;
+    activeSDL3 = RENIOS_SDL3 && !prefix;
     activeStartKeyboard = startKeyboard;
     keyboardDismissedByPlayer = NO;
 
@@ -434,6 +436,44 @@ void renios_toggle_keyboard(void) {
     keyboardDismissedByPlayer = NO;
     activeStartKeyboard();
     [field becomeFirstResponder];
+}
+
+void renios_playback_key(int scancode, int keycode) {
+    if (!activePushEvent) { return; }
+    // SDL2 and SDL3 keep the same event numbers but use different keyboard layouts.
+    union {
+        uint64_t storage[32];
+        struct {
+            uint32_t type, timestamp, windowID;
+            uint8_t down, repeat, padding[2];
+            int32_t scancode, key;
+            uint16_t modifiers;
+            uint32_t unused;
+        } sdl2;
+        struct {
+            uint32_t type, reserved;
+            uint64_t timestamp;
+            uint32_t windowID, keyboardID;
+            int32_t scancode;
+            uint32_t key;
+            uint16_t modifiers, raw;
+            bool down, repeat;
+        } sdl3;
+    } event = {0};
+    for (int down = 1; down >= 0; --down) {
+        if (activeSDL3) {
+            event.sdl3.type = down ? 0x300 : 0x301;
+            event.sdl3.scancode = scancode;
+            event.sdl3.key = (uint32_t)keycode;
+            event.sdl3.down = down != 0;
+        } else {
+            event.sdl2.type = down ? 0x300 : 0x301;
+            event.sdl2.scancode = scancode;
+            event.sdl2.key = keycode;
+            event.sdl2.down = (uint8_t)down;
+        }
+        activePushEvent(&event);
+    }
 }
 
 void renios_request_quit(void) {

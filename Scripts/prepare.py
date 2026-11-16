@@ -158,7 +158,7 @@ def configure_project(project, version):
     if count != 1:
         raise ValueError("Expected one upstream frameworks phase")
 
-    for index, name in enumerate(("reniOS.swift", "Library.swift", "Engine.swift", "APKTitle.swift", "Management.swift", "Runtime.c"), 4):
+    for index, name in enumerate(("reniOS.swift", "Library.swift", "Engine.swift", "APKTitle.swift", "Management.swift", "GameMetadata.swift", "CoverLookup.swift", "Runtime.c"), 4):
         file_type = "sourcecode.c.c" if name.endswith(".c") else "sourcecode.swift"
         reference = f"B100000000000000000000{index:02d}"
         build = f"B100000000000000000001{index:02d}"
@@ -264,6 +264,17 @@ def configure_game_reload(engine):
     source = source.replace("basedir = get_alternate_base(original_basedir)", "basedir = original_basedir")
     bootstrap.write_text(source, encoding="utf-8")
 
+    main = engine / "main.py"
+    source = main.read_text(encoding="utf-8")
+    source, count = re.subn(r'^( +)log_clock\("Running init code\.?"\)$',
+                            lambda match: match[0] + "\n" + match[1]
+                            + "import renios_runtime\n" + match[1]
+                            + "renios_runtime.record_metadata(renpy)",
+                            source, flags=re.M)
+    if count != 1:
+        raise ValueError("Expected one Ren’Py game initialization checkpoint")
+    main.write_text(source, encoding="utf-8")
+
     module = engine / "__init__.py"
     source = module.read_text(encoding="utf-8")
     # Keep the Objective-C class proxy out of the Python module backup.
@@ -278,7 +289,7 @@ def configure_game_reload(engine):
     source = source.replace('    if not renpy.session.get("_keep_renderer", False):',
                             '    if renpy.display.draw is not None and not renpy.session.get("_keep_renderer", False):')
     module.write_text(source, encoding="utf-8")
-    for patched in (bootstrap, module):
+    for patched in (bootstrap, main, module):
         for suffix in (".pyc", ".pyo"):
             patched.with_suffix(suffix).unlink(missing_ok=True)
         cache = patched.parent / "__pycache__"
