@@ -349,12 +349,20 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
         unsetenv("RENIOS_PROBE_PROJECT");
         NSURL *request = probeFile(@"renios-quit.request");
         NSURL *controls = probeFile(@"renios-controls.request");
+        __block BOOL readyReported = NO;
         quitProbe = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
+            const char *reportedEngine = getenv("RENIOS_PROBE_ENGINE");
+            const char *reportedProject = getenv("RENIOS_PROBE_PROJECT");
+            if (!reportedEngine || !reportedProject) { return; }
+            if (!readyReported) {
+                writeProbe(@{@"engine": @(reportedEngine), @"project": @(reportedProject),
+                             @"pid": @(NSProcessInfo.processInfo.processIdentifier)}, @"renios-ready.json");
+                readyReported = YES;
+            }
             if ([NSFileManager.defaultManager fileExistsAtPath:controls.path] && startPlaybackControlsProbe()) {
                 [NSFileManager.defaultManager removeItemAtURL:controls error:NULL];
             }
-            if (!getenv("RENIOS_PROBE_ENGINE")
-                || ![NSFileManager.defaultManager fileExistsAtPath:request.path]) { return; }
+            if (![NSFileManager.defaultManager fileExistsAtPath:request.path]) { return; }
 
             [timer invalidate];
             [NSFileManager.defaultManager removeItemAtURL:request error:NULL];

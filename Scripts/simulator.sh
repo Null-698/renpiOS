@@ -8,17 +8,21 @@ mkdir -p out/diagnostics
 app=${2:?pass the path to the shared simulator app}
 test -d "$app"
 bundle=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist")
-runtime=$(xcrun simctl list runtimes -j | jq -r --arg version "$major" '
-  [.runtimes[] | select(.isAvailable and (.identifier | contains(".iOS-")) and
-  (.version | split(".")[0] == $version))] | sort_by(.version | split(".") | map(tonumber)) | .[-1].identifier // empty')
-test -n "$runtime"
-udid=$(xcrun simctl list devices available -j | jq -r --arg runtime "$runtime" '
-  [.devices[$runtime][]? | select(.isAvailable and (.name | startswith("iPhone")))] |
-  sort_by(if (.name == "iPhone 17" or .name == "iPhone 18") then 0 else 1 end) |
-  .[0].udid // empty')
+runtimes=$(xcrun simctl list runtimes -j)
+devices=$(xcrun simctl list devices available -j)
+selection=$(jq -nr --argjson runtimes "$runtimes" --argjson devices "$devices" --arg major "$major" '
+  [$runtimes.runtimes[] | select(.isAvailable and (.identifier | contains(".iOS-")) and
+    (.version | split(".")[0] == $major)) as $runtime |
+    $devices.devices[$runtime.identifier][]? |
+    select(.isAvailable and (.name | startswith("iPhone"))) |
+    { udid, name, runtime: $runtime.identifier, version: ($runtime.version | split(".") | map(tonumber)) }] |
+  sort_by([(.name | test("Duo"; "i")), (.version | map(-.)),
+           (if (.name == "iPhone 17" or .name == "iPhone 18") then 0 else 1 end), .name, .udid]) |
+  first | if . then [.runtime, .udid] | @tsv else empty end')
+IFS=$'\t' read -r runtime udid <<< "$selection"
 if [[ -z "$udid" ]]; then
   xcrun simctl list
-  echo "No preconfigured iPhone for $runtime" >&2
+  echo "No preconfigured iPhone for iOS $major" >&2
   exit 1
 fi
 echo "Testing $bundle on $runtime ($udid)"
@@ -55,9 +59,18 @@ fi
 if ! bounded 240 xcrun simctl bootstatus "$udid" -b; then
   bounded 120 xcrun simctl bootstatus "$udid" -b
 fi
-if [[ ! -f out/.simulator-installed ]]; then
-  bounded 240 xcrun simctl install "$udid" "$app"
-  touch out/.simulator-installed
+executable=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$app/Info.plist")
+is_current_install() {
+  local installed
+  installed=$(bounded 20 xcrun simctl get_app_container "$udid" "$bundle" app 2>/dev/null) &&
+    cmp -s "$app/$executable" "$installed/$executable"
+}
+if ! is_current_install; then
+  echo "Installing $bundle"
+  if ! bounded 240 xcrun simctl install "$udid" "$app" && ! is_current_install; then
+    echo "::warning::Retrying the simulator app installation"
+    bounded 240 xcrun simctl install "$udid" "$app"
+  fi
 fi
 data=$(xcrun simctl get_app_container "$udid" "$bundle" data)
 
@@ -77,13 +90,26 @@ if [[ "$mode" == preview ]]; then
 fi
 
 wait_for_probe() {
-  local file=$1
-  for ((attempt=0; attempt<45; attempt++)); do
-    [[ ! -s "$file" ]] || return 0
+  local file=$1 timeout=$2 pid=$3
+  local deadline=$((SECONDS + timeout))
+  while [[ ! -s "$file" && "$SECONDS" -lt "$deadline" ]]; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "Simulator app exited while waiting for $(basename "$file")." >&2
+      return 1
+    fi
     sleep 1
   done
-  echo "Timed out waiting for $(basename "$file")." >&2
-  return 1
+  if [[ ! -s "$file" ]]; then
+    echo "Timed out after $timeout seconds waiting for $(basename "$file")." >&2
+    return 1
+  fi
+}
+
+sample_app() {
+  local pid=$1 label=$2
+  if kill -0 "$pid" 2>/dev/null; then
+    bounded 45 /usr/bin/sample "$pid" 2 10 -file "$PWD/out/diagnostics/$label-sample.log" || true
+  fi
 }
 
 probe_playback() {
@@ -93,25 +119,41 @@ probe_playback() {
   local cache="$data/Library/Caches"
   local quit="$cache/renios-quit.json"
   bounded 25 xcrun simctl terminate "$udid" "$bundle" >/dev/null 2>&1 || true
-  rm -f "$cache"/renios-{library.json,quit.json,quit.request,controls.json,controls.request}
+  rm -f "$cache"/renios-{library.json,ready.json,quit.json,quit.request,controls.json,controls.request}
 
   echo "Testing Ren’Py session: $*"
   local launch
-  launch=$(bounded 90 xcrun simctl launch --terminate-running-process --stdout="$PWD/out/diagnostics/$label-stdout.log" \
+  # Exercise SDL audio initialization without depending on the runner's audio device.
+  launch=$(SIMCTL_CHILD_SDL_AUDIODRIVER=dummy SIMCTL_CHILD_SDL_AUDIO_DRIVER=dummy \
+    bounded 120 xcrun simctl launch --terminate-running-process --stdout="$PWD/out/diagnostics/$label-stdout.log" \
     --stderr="$PWD/out/diagnostics/$label-stderr.log" "$udid" "$bundle" --playback-probe "$@") || return
   echo "$launch"
   local app_pid=${launch##*: }
-  wait_for_probe "$cache/renios-library.json" || return
+  if [[ ! "$app_pid" =~ ^[0-9]+$ ]]; then
+    echo "Could not read the simulator app PID." >&2
+    return 1
+  fi
+  wait_for_probe "$cache/renios-library.json" 90 "$app_pid" || return
   cp "$cache/renios-library.json" "out/library-probe-$label.json" || return
   jq -e '.importsAndSaves == true' "out/library-probe-$label.json" || return
 
   local index=0 pid= engine result
   for engine in "$@"; do
     ((index+=1))
+    echo "Waiting for game $index on Ren’Py $engine to reach dialogue"
+    if ! wait_for_probe "$cache/renios-ready.json" 120 "$app_pid"; then
+      sample_app "$app_pid" "$label"
+      return 1
+    fi
+    local ready="out/ready-probe-$label-$index.json"
+    mv "$cache/renios-ready.json" "$ready" || return
+    jq -e --arg engine "$engine" --arg project "Playback Probe $index" --argjson pid "$app_pid" \
+      '.engine == $engine and (.project | startswith($project)) and .pid == $pid' "$ready" || return
+
     if [[ "$check_rotation" == true && "$index" == 1 ]]; then
       local controls="$cache/renios-controls.json"
       touch "$cache/renios-controls.request" || return
-      wait_for_probe "$controls" || return
+      wait_for_probe "$controls" 60 "$app_pid" || return
       cp "$controls" "out/controls-probe-$label.json" || return
       cat "out/controls-probe-$label.json"
       jq -e '.rotated and .viewportFillsWindow and .drawableMatchesViewport' "out/controls-probe-$label.json" || return
@@ -122,11 +164,10 @@ probe_playback() {
       fi
     fi
 
+    echo "Requesting Close for game $index"
     touch "$cache/renios-quit.request" || return
-    if ! wait_for_probe "$quit"; then
-      if [[ "$app_pid" =~ ^[0-9]+$ ]] && kill -0 "$app_pid" 2>/dev/null; then
-        bounded 15 /usr/bin/sample "$app_pid" 2 10 -file "$PWD/out/diagnostics/$label-sample.log" || true
-      fi
+    if ! wait_for_probe "$quit" 60 "$app_pid"; then
+      sample_app "$app_pid" "$label"
       return 1
     fi
     result="out/quit-probe-$label-$index.json"

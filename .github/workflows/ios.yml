@@ -76,6 +76,7 @@ jobs:
         with:
           name: engine-switch-iOS-27
           path: |
+            out/ready-probe-engine-switch-*.json
             out/quit-probe-engine-switch-*.json
             out/library-probe-engine-switch.json
             out/diagnostics/engine-switch-*.log
@@ -90,6 +91,7 @@ jobs:
           path: |
             out/library-probe*.json
             out/controls-probe*.json
+            out/ready-probe*.json
             out/quit-probe*.json
             out/diagnostics/
           if-no-files-found: ignore
