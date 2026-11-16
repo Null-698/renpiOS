@@ -8,6 +8,8 @@ struct Novel: Codable, Identifiable, Equatable, Sendable {
     let imported: Date
     var lastPlayed: Date?
     var detectedEngine: String?
+    var gameVersion: String?
+    var versionScanned: Bool?
     var engineOverride: String?
     var orientation: GameOrientation?
     var gameFolder: String?
@@ -237,10 +239,19 @@ enum LibraryStore {
                 try? fm.removeItem(at: archived)
             }
         }
+        if novel.versionScanned != true {
+            let source = pristineGame(for: novel)
+            let values = GameMetadata.declarations(in: GameMetadata.files(in: source))
+            novel.gameVersion = GameMetadata.versionLabel(values["config.version"])
+            novel.versionScanned = true
+        }
         if let data = try? Data(contentsOf: novel.root.appending(path: ".renios-runtime.json")),
            let metadata = try? JSONDecoder().decode(GameMetadata.Runtime.self, from: data) {
             if novel.titleIsManual != true, let title = GameMetadata.displayTitle(metadata.title) {
                 novel.title = title
+            }
+            if metadata.modsActive == false, let version = GameMetadata.versionLabel(metadata.version) {
+                novel.gameVersion = version
             }
             if let developer = GameMetadata.displayTitle(metadata.developer) { novel.developer = developer }
             let keys = GameMetadata.identityKeys(package: nil, save: metadata.saveDirectory,
@@ -305,6 +316,7 @@ enum LibraryStore {
         defer { if !prepared { try? fm.removeItem(at: temp) } }
         let game = temp.appending(path: "game")
         var apkTitle: String?
+        var apkVersion: String?
         var apkIdentifier: String?
         var projectName: String?
         try fm.createDirectory(at: game, withIntermediateDirectories: true)
@@ -312,10 +324,12 @@ enum LibraryStore {
         if try source.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true {
             try importDirectory(source, into: game)
             novel.detectedEngine = detectInDirectory(source)
+            projectName = source.lastPathComponent
         } else {
             let metadata = try importArchive(source, into: game)
             novel.detectedEngine = metadata.engine
             apkTitle = metadata.title
+            apkVersion = metadata.version
             apkIdentifier = metadata.identifier
             projectName = metadata.project
         }
@@ -328,6 +342,9 @@ enum LibraryStore {
             ?? GameMetadata.filenameTitle(projectName ?? filename) ?? GameMetadata.filenameTitle(filename)
             ?? GameMetadata.filenameTitle(metadata["build.name"] ?? "") ?? filename
         novel.titleIsManual = override != nil
+        novel.gameVersion = GameMetadata.versionLabel(metadata["config.version"])
+            ?? GameMetadata.versionLabel(apkVersion) ?? GameMetadata.packagedVersion(projectName)
+        novel.versionScanned = true
         novel.fingerprint = GameMetadata.fingerprint(files, in: game)
         novel.gameKeys = GameMetadata.identityKeys(package: apkIdentifier, save: metadata["config.save_directory"],
                                                  build: metadata["build.name"], title: scriptTitle)
@@ -402,6 +419,8 @@ enum LibraryStore {
             }
             if updated.titleIsManual != true { updated.title = incoming.title }
             updated.detectedEngine = incoming.detectedEngine
+            updated.gameVersion = incoming.gameVersion
+            updated.versionScanned = incoming.versionScanned
             updated.gameKeys = incoming.gameKeys
             updated.fingerprint = incoming.fingerprint
             updated.contentDigest = incoming.contentDigest
@@ -870,7 +889,12 @@ enum LibraryStore {
             try Data(contents.utf8).write(to: output)
         }
 
-        guard try checkImportIdentity(in: fixtures) else { return false }
+        guard GameMetadata.compareVersions("v1.10", "1.9") == .orderedDescending,
+              GameMetadata.compareVersions("2.0-rc.3", "2.0") == .orderedAscending,
+              GameMetadata.compareVersions("2.0.0+build5", "2.0") == .orderedSame,
+              GameMetadata.compareVersions("Chapter Two", "Chapter One") == nil,
+              GameMetadata.packagedVersion("The-Novel-1.2.3-pc") == "1.2.3",
+              try checkImportIdentity(in: fixtures) else { return false }
 
         let desktop = fixtures.appending(path: "desktop")
         try add("version = '8.3.4.25010101'", at: "Novel/renpy/vc_version.py", in: desktop)
@@ -950,19 +974,21 @@ enum LibraryStore {
     private static func checkImportIdentity(in fixtures: URL) throws -> Bool {
         let token = UUID().uuidString
         let title = "Identity Test " + token
-        func source(_ parent: String, bytes: String) throws -> URL {
+        func source(_ parent: String, bytes: String, version: String) throws -> URL {
             let root = fixtures.appending(path: parent).appending(path: "SameArchive")
             let game = root.appending(path: "game")
             try fm.createDirectory(at: game, withIntermediateDirectories: true)
             let script = "define config.name = \"\(title)\"\ndefine config.save_directory = \"\(token)\"\nlabel start:\n    return"
             try Data(script.utf8).write(to: game.appending(path: "script.rpy"))
+            let options = "define config.version = \"\(version)\" # Game release"
+            try Data(options.utf8).write(to: game.appending(path: "options.rpy"))
             try Data(bytes.utf8).write(to: game.appending(path: "story.txt"))
             return root
         }
 
-        let first = try source("first", bytes: "AAAA")
-        let newer = try source("newer", bytes: "BBBB")
-        let unrelated = try source("unrelated", bytes: "CCCC")
+        let first = try source("first", bytes: "AAAA", version: "1.9")
+        let newer = try source("newer", bytes: "BBBB", version: "1.10")
+        let unrelated = try source("unrelated", bytes: "CCCC", version: "1.9")
         var cleanup: [Novel] = []
         defer {
             for game in cleanup.reversed() {
@@ -978,7 +1004,10 @@ enum LibraryStore {
 
         let separatePlan = try prepareImport(newer)
         defer { discardImport(separatePlan) }
-        guard separatePlan.matchingGames.map(\.id) == [installed.id] else { return false }
+        guard separatePlan.matchingGames.map(\.id) == [installed.id],
+              installed.gameVersion == "1.9", separatePlan.incoming.gameVersion == "1.10",
+              GameMetadata.compareVersions(separatePlan.incoming.gameVersion, installed.gameVersion) == .orderedDescending
+        else { return false }
         let separate = try finishImport(separatePlan, choice: .fresh)
         cleanup.append(separate)
         guard separate.saves != installed.saves,
@@ -1011,6 +1040,7 @@ enum LibraryStore {
         defer { discardImport(updatePlan) }
         let updated = try finishImport(updatePlan, choice: .update(installed.id))
         guard updated.id == installed.id, updated.root == installed.root, updated.saves == installed.saves,
+              updated.gameVersion == "1.10",
               try String(contentsOf: updated.root.appending(path: "game/story.txt"), encoding: .utf8) == "BBBB",
               try String(contentsOf: slot, encoding: .utf8) == "progress" else { return false }
 
@@ -1031,7 +1061,7 @@ enum LibraryStore {
 
         let freshPlan = try prepareImport(unrelated)
         defer { discardImport(freshPlan) }
-        guard freshPlan.needsReview, freshPlan.exactSaves == nil,
+        guard freshPlan.needsReview, freshPlan.exactSaves == nil, freshPlan.incoming.gameVersion == "1.9",
               freshPlan.retainedSaves.map({ $0.folder.path }) == [installed.saves.path] else { return false }
         let fresh = try finishImport(freshPlan, choice: .fresh)
         cleanup.append(fresh)
@@ -1148,7 +1178,7 @@ enum LibraryStore {
     }
 
     private static func importArchive(_ source: URL, into destination: URL)
-        throws -> (engine: String?, title: String?, identifier: String?, project: String?) {
+        throws -> (engine: String?, title: String?, identifier: String?, project: String?, version: String?) {
         let archive = try Archive(url: source, accessMode: .read)
         let isAPK = source.pathExtension.lowercased() == "apk"
         var entries: [(Entry, [String])] = []
@@ -1202,7 +1232,7 @@ enum LibraryStore {
             _ = try archive.extract(entry, to: output)
         }
         let detected = detectInArchive(archive, entries: entries, project: Array(prefix.dropLast()), android: isAPK)
-        guard isAPK else { return (detected, nil, nil, prefix.dropLast().last) }
+        guard isAPK else { return (detected, nil, nil, prefix.dropLast().last, nil) }
         func androidFile(_ path: String, limit: Int) -> Data? {
             guard let entry = entries.first(where: { $0.1 == [path] })?.0,
                   UInt64(entry.uncompressedSize) <= UInt64(limit) else { return nil }
@@ -1214,7 +1244,7 @@ enum LibraryStore {
         let details = androidFile("AndroidManifest.xml", limit: 524_288).map { manifest in
             APKTitle.read(manifest: manifest) { androidFile("resources.arsc", limit: 16 * 1024 * 1024) }
         }
-        return (detected ?? detectInAndroidPrivateData(archive, entries: entries), details?.title, details?.identifier, nil)
+        return (detected ?? detectInAndroidPrivateData(archive, entries: entries), details?.title, details?.identifier, nil, details?.version)
     }
 
     private static func importDirectory(_ source: URL, into destination: URL) throws {

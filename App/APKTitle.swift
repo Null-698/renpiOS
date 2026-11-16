@@ -1,6 +1,6 @@
 import Foundation
 
-// RAPT stores the Android application label as either a literal or a resource.
+// RAPT stores application metadata as literals or resources.
 enum APKTitle {
     private struct Binary {
         let data: Data
@@ -61,14 +61,15 @@ enum APKTitle {
         let end: Int
     }
 
-    static func read(manifest: Data, resources: () -> Data?) -> (title: String?, identifier: String?) {
+    static func read(manifest: Data, resources: () -> Data?) -> (title: String?, identifier: String?, version: String?) {
         let xml = Binary(data: manifest)
-        guard let root = xml.chunks(0, manifest.count).first, root.type == 3 else { return (nil, nil) }
+        guard let root = xml.chunks(0, manifest.count).first, root.type == 3 else { return (nil, nil, nil) }
         let children = xml.chunks(root.start + root.header, root.end)
-        guard let pool = children.first(where: { $0.type == 1 }) else { return (nil, nil) }
+        guard let pool = children.first(where: { $0.type == 1 }) else { return (nil, nil, nil) }
 
         var title: String?
         var identifier: String?
+        var version: String?
         for element in children where element.type == 0x102 {
             let ext = element.start + element.header
             guard ext <= element.end - 20, let index = xml.number(ext + 4),
@@ -85,13 +86,17 @@ enum APKTitle {
                 if name == "manifest", attribute == "package", type == 3 {
                     identifier = xml.string(value, in: pool)
                 }
+                if name == "manifest", attribute == "versionName" {
+                    if type == 3 { version = xml.string(value, in: pool) }
+                    if type == 1, let table = resources() { version = label(value, in: table) }
+                }
                 if name == "application", attribute == "label" {
                     if type == 3 { title = xml.string(value, in: pool) }
                     if type == 1, let table = resources() { title = label(value, in: table) }
                 }
             }
         }
-        return (title, identifier)
+        return (title, identifier, version)
     }
 
     private static func label(_ id: Int, in data: Data) -> String? {

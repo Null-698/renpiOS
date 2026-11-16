@@ -97,6 +97,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Capture launcher and management previews
+        if: ${{ !cancelled() }}
         continue-on-error: true
         run: bash Scripts/simulator.sh 27 "$PWD/out/reniOS.app" preview
       - name: Upload launcher previews

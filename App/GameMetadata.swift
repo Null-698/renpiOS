@@ -5,6 +5,8 @@ import ImageIO
 enum GameMetadata {
     struct Runtime: Decodable {
         var title: String?
+        var version: String?
+        var modsActive: Bool?
         var saveDirectory: String?
         var buildName: String?
         var developer: String?
@@ -66,7 +68,7 @@ enum GameMetadata {
         let prioritized = files.filter { $0.pathExtension.lowercased() == "rpy" }
         let options = prioritized.filter { $0.deletingPathExtension().lastPathComponent.lowercased() == "options" }
         let rest = prioritized.filter { !options.contains($0) }
-        let pattern = #"(?m)^[\t ]*(?:(?:define|default|\$)[\t ]+)?((?:config\.(?:name|save_directory|window_icon|developer)|build\.(?:name|directory_name)|gui\.main_menu_background))[\t ]*=[\t ]*(?:(?:__|_)\([\t ]*)?[uUrR]?(["'])((?:\\.|(?!\2)[^\r\n])*)\2"#
+        let pattern = #"(?m)^[\t ]*(?:(?:define|default|\$)[\t ]+)?((?:config\.(?:name|version|save_directory|window_icon|developer)|build\.(?:name|directory_name)|gui\.main_menu_background))[\t ]*=[\t ]*(?:(?:__|_)\([\t ]*)?[uUrR]?(["'])((?:\\.|(?!\2)[^\r\n])*)\2"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return [:] }
         var values: [String: String] = [:]
         for file in (options + rest).prefix(160) {
@@ -76,13 +78,62 @@ enum GameMetadata {
                 guard let name = Range(match.range(at: 1), in: source),
                       let range = Range(match.range(at: 3), in: source) else { continue }
                 let key = String(source[name])
+                if key == "config.version", let full = Range(match.range, in: source) {
+                    let remainder = source[full.upperBound...].prefix(while: { !$0.isNewline })
+                    guard remainder.range(of: #"^\s*\)?\s*(?:#.*)?$"#, options: .regularExpression) != nil else { continue }
+                }
                 let literal = String(source[range]).replacingOccurrences(of: #"\(["'\])"#,
                                                                           with: "$1", options: .regularExpression)
                 if !literal.isEmpty, values[key] == nil { values[key] = literal }
             }
-            if values.count == 7 { break }
+            if values.count == 8 { break }
         }
         return values
+    }
+
+    static func versionLabel(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let label = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty, label.count <= 72,
+              !label.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { return nil }
+        return label
+    }
+
+    static func packagedVersion(_ project: String?) -> String? {
+        guard let project, let range = project.range(
+            of: #"(?i)(?<=-)[v]?[0-9]+(?:\.[0-9]+)+(?:[._-]?(?:alpha|beta|rc|a|b)[0-9]*)?(?=-(?:pc|win|windows|mac|linux|market)$)"#,
+            options: .regularExpression
+        ) else { return nil }
+        return versionLabel(String(project[range]))
+    }
+
+    static func compareVersions(_ incoming: String?, _ installed: String?) -> ComparisonResult? {
+        guard let incoming = versionLabel(incoming), let installed = versionLabel(installed) else { return nil }
+        if incoming.caseInsensitiveCompare(installed) == .orderedSame { return .orderedSame }
+        guard let lhs = orderedVersion(incoming), let rhs = orderedVersion(installed) else { return nil }
+        for index in 0..<max(lhs.parts.count, rhs.parts.count) {
+            let a = lhs.parts.indices.contains(index) ? lhs.parts[index] : 0
+            let b = rhs.parts.indices.contains(index) ? rhs.parts[index] : 0
+            if a != b { return a < b ? .orderedAscending : .orderedDescending }
+        }
+        if lhs.stage != rhs.stage { return lhs.stage < rhs.stage ? .orderedAscending : .orderedDescending }
+        if lhs.revision != rhs.revision { return lhs.revision < rhs.revision ? .orderedAscending : .orderedDescending }
+        return .orderedSame
+    }
+
+    private static func orderedVersion(_ label: String) -> (parts: [Int], stage: Int, revision: Int)? {
+        let pattern = #"^v?([0-9]+(?:\.[0-9]+)*)(?:[ ._-]*(alpha|beta|rc|a|b)[ ._-]*([0-9]*))?(?:\+[a-z0-9.-]+)?$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+              let match = regex.firstMatch(in: label, range: NSRange(label.startIndex..., in: label)),
+              let core = Range(match.range(at: 1), in: label) else { return nil }
+        let numbers = label[core].split(separator: ".")
+        let parts = numbers.compactMap { Int($0) }
+        guard parts.count == numbers.count else { return nil }
+        guard let suffix = Range(match.range(at: 2), in: label) else { return (parts, 3, 0) }
+        let stage = ["a": 0, "alpha": 0, "b": 1, "beta": 1, "rc": 2][label[suffix].lowercased()] ?? 3
+        let revision = Range(match.range(at: 3), in: label).map { label[$0] } ?? ""
+        guard let count = Int(revision.isEmpty ? "0" : revision) else { return nil }
+        return (parts, stage, count)
     }
 
     static func identityKeys(package: String?, save: String?, build: String?, title: String?) -> [String] {

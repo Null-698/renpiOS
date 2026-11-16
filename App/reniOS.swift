@@ -78,6 +78,17 @@ final class Session {
                     NSLog("reniOS launcher preview: %@", error.localizedDescription)
                 }
             }
+            if previewLandscape, let base = Bundle.main.url(forResource: "base", withExtension: nil) {
+                do {
+                    let sample = base.appending(path: "Demo")
+                    novels = try ["Afterlight", "Night Crossing", "Quiet Orbit"].map { title in
+                        if let game = novels.first(where: { $0.title == title }) { return game }
+                        return try LibraryStore.install(sample, title: title, checkDuplicates: false)
+                    }
+                } catch {
+                    NSLog("reniOS carousel preview: %@", error.localizedDescription)
+                }
+            }
         }
         #endif
 
@@ -399,7 +410,7 @@ private struct LibraryScreen: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let wide = geometry.size.width >= 610 && geometry.size.width > geometry.size.height && !dynamicType.isAccessibilitySize
+            let wide = geometry.size.width >= 500 && geometry.size.width > geometry.size.height && !dynamicType.isAccessibilitySize
             let games = visibleNovels
 
             VStack(spacing: 0) {
@@ -544,91 +555,118 @@ private struct LibraryScreen: View {
 
     private func landscape(feature: Novel, games: [Novel]) -> some View {
         GeometryReader { geometry in
-            let tileSize = min(118, max(64, geometry.size.height * 0.32))
-            ZStack(alignment: .topLeading) {
-                CoverArt(url: feature.cover, tint: amber)
-                    .id(feature.id)
-                    .transition(.opacity)
-                LinearGradient(colors: [ink, ink.opacity(0.87), ink.opacity(0.10)],
-                               startPoint: .leading, endPoint: .trailing)
-                LinearGradient(colors: [ink.opacity(0.48), .clear, ink.opacity(0.84)],
-                               startPoint: .top, endPoint: .bottom)
-                VStack(alignment: .leading, spacing: 10) {
-                    ScrollViewReader { proxy in
-                        ScrollView(.horizontal) {
-                            LazyHStack(alignment: .top, spacing: 12) {
-                                ForEach(games) { game in
-                                    consoleTile(game, selected: feature.id == game.id, size: tileSize)
-                                        .id(game.id)
-                                }
-                            }
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 6)
-                        }
-                        .scrollIndicators(.hidden)
-                        .frame(height: tileSize + 12)
-                        .onChange(of: focusedGame) { _, game in
-                            guard let game else { return }
-                            highlightedID = game
-                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
-                                proxy.scrollTo(game, anchor: .center)
+            let width = geometry.size.width
+            let cardWidth = min(580, width * 0.58)
+            let cardHeight = max(92, geometry.size.height - 78)
+            let index = games.firstIndex { $0.id == feature.id } ?? 0
+            let tint = carouselTint(feature)
+
+            ZStack {
+                RadialGradient(colors: [tint.opacity(0.25), ink],
+                               center: .top, startRadius: 10, endRadius: width * 0.56)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.30), value: feature.id)
+                VStack(spacing: 8) {
+                    ScrollView(.horizontal) {
+                        LazyHStack(spacing: 14) {
+                            ForEach(games) { game in
+                                carouselCard(game, selected: feature.id == game.id,
+                                             width: cardWidth, height: cardHeight)
+                                    .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                                        content
+                                            .scaleEffect(reduceMotion || phase.isIdentity ? 1 : 0.89)
+                                            .opacity(reduceMotion || phase.isIdentity ? 1 : 0.58)
+                                    }
+                                    .id(game.id)
                             }
                         }
+                        .scrollTargetLayout()
                     }
-                    Spacer(minLength: 1)
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(feature.title)
-                            .font(.system(size: min(50, max(25, geometry.size.height * 0.15)),
-                                          weight: .semibold, design: .serif))
-                            .lineLimit(2)
-                            .foregroundStyle(cream)
-                            .accessibilityAddTraits(.isHeader)
-                        HStack(spacing: 10) {
-                            Button("Play", systemImage: "play.fill") { session.launch(feature) }
-                                .buttonStyle(.glassProminent)
-                                .disabled(session.isImporting || Session.engine(for: feature) == nil)
-                            Button("Details", systemImage: "ellipsis") { showDetails(feature) }
-                                .buttonStyle(.glass)
-                        }
-                        .font(.subheadline.weight(.semibold))
+                    .contentMargins(.horizontal, (width - cardWidth) / 2, for: .scrollContent)
+                    .scrollPosition(id: $highlightedID, anchor: .center)
+                    .scrollTargetBehavior(.viewAligned(limitBehavior: .alwaysByOne, anchor: .center))
+                    .scrollBounceBehavior(.basedOnSize)
+                    .scrollIndicators(.hidden)
+                    .frame(height: cardHeight + 4)
+
+                    HStack(spacing: 8) {
+                        carouselArrow(.leading, to: index > 0 ? games[index - 1].id : nil)
+                        Button("Play", systemImage: "play.fill") { session.launch(feature) }
+                            .buttonStyle(.glassProminent)
+                            .disabled(session.isImporting || Session.engine(for: feature) == nil)
+                        Button("Details", systemImage: "ellipsis") { showDetails(feature) }
+                            .buttonStyle(.glass)
+                        carouselArrow(.trailing, to: index + 1 < games.count ? games[index + 1].id : nil)
                     }
-                    .padding(.horizontal, 22)
-                    .padding(.bottom, 12)
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.bottom, 6)
+                }
+                .padding(.top, 7)
+            }
+            .onChange(of: games.map(\.id), initial: true) {
+                if !games.contains(where: { $0.id == highlightedID }) {
+                    highlightedID = games.first?.id
                 }
             }
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: feature.id)
-            .clipShape(.rect(cornerRadius: 21))
-            .overlay { RoundedRectangle(cornerRadius: 21).strokeBorder(.white.opacity(0.12)).allowsHitTesting(false) }
+            .onChange(of: focusedGame) { _, id in
+                if let id { centerGame(id) }
+            }
         }
-        .padding(.horizontal, 20)
     }
 
-    private func consoleTile(_ game: Novel, selected: Bool, size: CGFloat) -> some View {
+    private func carouselCard(_ game: Novel, selected: Bool, width: CGFloat, height: CGFloat) -> some View {
         Button {
-            highlightedID = game.id
+            if selected { showDetails(game) }
+            else { centerGame(game.id) }
         } label: {
-            CoverArt(url: game.cover, tint: amber)
-                .frame(width: size, height: size)
-                .overlay(alignment: .bottomLeading) {
-                    if game.cover == nil {
-                        Text(game.title)
-                            .font(.caption2.weight(.semibold))
-                            .lineLimit(2)
-                            .foregroundStyle(cream)
-                            .padding(8)
-                    }
-                }
-                .clipShape(.rect(cornerRadius: 12))
+            CoverArt(url: game.cover, tint: carouselTint(game))
+                .frame(width: width, height: height)
                 .overlay {
-                    RoundedRectangle(cornerRadius: 12)
-                        .strokeBorder(selected ? amber : .white.opacity(0.18), lineWidth: selected ? 2 : 1)
+                    LinearGradient(colors: [.clear, .black.opacity(0.84)], startPoint: .center, endPoint: .bottom)
                 }
-                .opacity(selected ? 1 : 0.78)
+                .overlay(alignment: .bottomLeading) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(game.title)
+                            .font(.system(size: min(35, max(18, height * 0.19)), weight: .semibold, design: .serif))
+                            .lineLimit(2)
+                        if let version = game.gameVersion {
+                            Text(version).font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.77))
+                        }
+                    }
+                    .foregroundStyle(cream)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                }
+                .clipShape(.rect(cornerRadius: 19))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 19)
+                        .strokeBorder(selected ? amber.opacity(0.80) : .white.opacity(0.16), lineWidth: selected ? 2 : 1)
+                }
         }
         .buttonStyle(.plain)
         .focused($focusedGame, equals: game.id)
         .accessibilityLabel(game.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private func centerGame(_ id: Novel.ID) {
+        withAnimation(reduceMotion ? nil : .smooth(duration: 0.35)) { highlightedID = id }
+    }
+
+    private func carouselTint(_ game: Novel) -> Color {
+        let index = game.title.utf8.reduce(0) { ($0 + Int($1)) % 4 }
+        return [amber, Color(red: 0.56, green: 0.63, blue: 0.97),
+                Color(red: 0.48, green: 0.81, blue: 0.70), Color(red: 0.91, green: 0.54, blue: 0.64)][index]
+    }
+
+    private func carouselArrow(_ direction: Edge, to game: Novel.ID?) -> some View {
+        let previous = direction == .leading
+        return Button(previous ? "Previous Game" : "Next Game",
+                      systemImage: previous ? "chevron.left" : "chevron.right") {
+            if let game { centerGame(game) }
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.glass)
+        .disabled(game == nil)
     }
 
     private func landscapeSearchResults(_ games: [Novel]) -> some View {
@@ -796,7 +834,11 @@ private struct ImportReviewSheet: View {
         NavigationStack {
             List {
                 Section {
-                    Text(plan.incoming.title).font(.headline)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(plan.incoming.title).font(.headline)
+                        Text(plan.incoming.gameVersion.map { "Importing version \($0)" } ?? "Incoming version unknown")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Button(plan.matchingGames.isEmpty ? "Start Fresh" : "Install Separately",
                            systemImage: "plus.square.on.square") { choose(.fresh) }
                 } footer: {
@@ -810,14 +852,17 @@ private struct ImportReviewSheet: View {
                                 choose(.update(game.id))
                             } label: {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text("Update \(game.title)")
-                                    Text(game.root.lastPathComponent)
+                                    Text(actionTitle(for: game))
+                                    Text(versionSummary(for: game))
                                         .font(.caption).foregroundStyle(.secondary)
+                                    if plan.matchingGames.count > 1 {
+                                        Text(game.root.lastPathComponent).font(.caption2).foregroundStyle(.secondary)
+                                    }
                                 }
                             }
                         }
                     } header: {
-                        Text("Matching Games")
+                        Text("Installed Games")
                     } footer: {
                         Text("Keeps your saves and disables installed mods until you re-enable them.")
                     }
@@ -846,6 +891,21 @@ private struct ImportReviewSheet: View {
         }
         .tint(amber)
         .presentationDragIndicator(.visible)
+    }
+
+    private func actionTitle(for game: Novel) -> String {
+        switch GameMetadata.compareVersions(plan.incoming.gameVersion, game.gameVersion) {
+        case .orderedDescending?: "Update \(game.title)"
+        case .orderedAscending?: "Install Older Version"
+        case .orderedSame?: "Replace Same Version"
+        case nil: "Replace \(game.title)"
+        }
+    }
+
+    private func versionSummary(for game: Novel) -> String {
+        let installed = game.gameVersion ?? "Unknown"
+        let incoming = plan.incoming.gameVersion ?? "Unknown"
+        return "Installed \(installed) → Incoming \(incoming)"
     }
 }
 
@@ -1063,11 +1123,16 @@ private struct NovelSheet: View {
                 .frame(width: 44, height: 44)
                 .background(.white.opacity(0.07), in: .circle)
                 .disabled(session.isImporting)
-            Text(novel.title)
-                .font(.system(.headline, design: .serif).weight(.semibold))
-                .lineLimit(1)
-                .foregroundStyle(cream)
-                .accessibilityAddTraits(.isHeader)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(novel.title)
+                    .font(.system(.headline, design: .serif).weight(.semibold))
+                    .lineLimit(1)
+                    .foregroundStyle(cream)
+                    .accessibilityAddTraits(.isHeader)
+                if let version = novel.gameVersion {
+                    Text("Version \(version)").font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Spacer()
             Menu {
                 Button("Rename", systemImage: "pencil") {

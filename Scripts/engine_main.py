@@ -131,8 +131,17 @@ def record_metadata(renpy):
 
     try:
         build = getattr(renpy.store, "build", None)
+        active_mods = False
+        mod_state = os.path.join(root, "game", ".renios-mod-state.json")
+        if os.path.isfile(mod_state):
+            with open(mod_state, "rb") as state:
+                active_mods = bool(json.load(state))
+        else:
+            active_mods = os.path.isdir(os.path.join(root, ".mod", "original"))
         write(".renios-runtime.json", json.dumps({
             "title": text(getattr(renpy.config, "name", None)),
+            "version": text(getattr(renpy.config, "version", None)),
+            "modsActive": active_mods,
             "saveDirectory": text(getattr(renpy.config, "save_directory", None)),
             "buildName": text(getattr(build, "name", None)),
             "developer": text(getattr(renpy.config, "developer", None)),
