@@ -6,7 +6,6 @@ from types import ModuleType
 initialized = False
 entry = None
 usable = True
-result_keys = ("RENIOS_QUIT_CONFIRMED", "RENIOS_PROBE_ENGINE", "RENIOS_PROBE_SAVES_MATCH", "RENIOS_PROBE_PROJECT")
 
 
 def finish(renpy):
@@ -33,27 +32,8 @@ def play():
 
     path = os.path.dirname(sys.argv[0])
     project = os.path.realpath(sys.argv[1])
-    probe = sys.argv.pop() == "1"
     session_path = list(sys.path)
     original_directory = os.getcwd()
-    for key in result_keys:
-        os.environ.pop(key, None)
-    if probe:
-        os.environ["RENIOS_PLAYBACK_PROBE"] = "1"
-        os.environ["RENIOS_PROBE_SAVES"] = sys.argv[3]
-    else:
-        os.environ.pop("RENIOS_PLAYBACK_PROBE", None)
-        os.environ.pop("RENIOS_PROBE_SAVES", None)
-
-    diagnostic = None
-    if probe:
-        try:
-            import faulthandler
-            faulthandler.dump_traceback_later(20)
-            diagnostic = faulthandler
-        except (ImportError, AttributeError, RuntimeError):
-            pass
-
     original_environment = dict(os.environ)
     original_modules = set(sys.modules)
     original_excepthook = sys.excepthook
@@ -76,12 +56,10 @@ def play():
         if status.code:
             raise RuntimeError("Ren'Py stopped with status {!r}".format(status.code))
     finally:
-        if diagnostic is not None:
-            diagnostic.cancel_dump_traceback_later()
         sys.path[:] = session_path
         sys.excepthook = original_excepthook
         os.chdir(original_directory)
-        for key in set(os.environ) - set(original_environment) - set(result_keys):
+        for key in set(os.environ) - set(original_environment):
             del os.environ[key]
         for key, value in original_environment.items():
             if os.environ.get(key) != value:

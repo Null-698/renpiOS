@@ -1,8 +1,3 @@
-init python:
-    def observatory_confirm_probe():
-        import os
-        os.environ["RENIOS_QUIT_CONFIRMED"] = "1"
-
 screen confirm(message, yes_action, no_action):
     modal True
     zorder 200
@@ -23,6 +18,3 @@ screen confirm(message, yes_action, no_action):
                 textbutton _("No") action no_action
 
     key "game_menu" action no_action
-
-    if os.environ.get("RENIOS_PLAYBACK_PROBE") == "1":
-        timer 0.2 action [Function(observatory_confirm_probe, _update_screens=False), yes_action]

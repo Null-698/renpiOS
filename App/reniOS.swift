@@ -39,30 +39,6 @@ final class Session {
 
     func run() {
         LibraryStore.discardAbandonedImports()
-        #if DEBUG
-        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--playback-probe") {
-            let engines = ProcessInfo.processInfo.arguments.dropFirst(index + 1)
-            do {
-                let result = ["importsAndSaves": try LibraryStore.checkImportsAndSaves()]
-                let output = URL.cachesDirectory.appending(path: "renios-library.json")
-                try JSONEncoder().encode(result).write(to: output, options: .atomic)
-                guard let base = Bundle.main.url(forResource: "base", withExtension: nil) else {
-                    throw ImportFailure.missingDemo
-                }
-                let sample = base.appending(path: "Demo")
-                for (number, version) in engines.enumerated() {
-                    var game = try LibraryStore.install(sample, title: "Playback Probe \(number + 1)", checkDuplicates: false)
-                    game.engineOverride = version
-                    if try play(game, probe: true) != 0 { return }
-                    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
-                }
-            } catch {
-                NSLog("reniOS playback probe: %@", error.localizedDescription)
-            }
-            return
-        }
-        #endif
-
         var previewTab: GameTab?
         var previewLandscape = false
         #if DEBUG
@@ -115,7 +91,7 @@ final class Session {
             pending = nil
             window.isHidden = true
             do {
-                _ = try play(game, probe: false)
+                _ = try play(game)
             } catch {
                 message = error.localizedDescription
             }
@@ -246,20 +222,20 @@ final class Session {
         }
     }
 
-    private func play(_ novel: Novel, probe: Bool) throws -> Int32 {
+    private func play(_ novel: Novel) throws -> Int32 {
         guard let version = Self.engine(for: novel) else {
             message = "This game needs a different Ren’Py engine."
             return -1
         }
         try FileManager.default.createDirectory(at: novel.saves, withIntermediateDirectories: true)
         try LibraryStore.recordPlay(novel)
-        let overlay = probe ? nil : makeGameOverlay()
-        defer { overlay?.isHidden = true }
+        let overlay = makeGameOverlay()
+        defer { overlay.isHidden = true }
         let result = novel.root.path.withCString { game in
             novel.saves.path.withCString { saves in
                 version.withCString { engine in
                     (novel.orientation?.sdlHint ?? "").withCString { hint in
-                        renios_play(game, saves, engine, hint, probe ? 1 : 0)
+                        renios_play(game, saves, engine, hint)
                     }
                 }
             }

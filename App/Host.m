@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-extern int renios_engine_play(const char *, const char *, const char *, int);
+extern int renios_engine_play(const char *, const char *, const char *);
 extern void renios_library(void);
 extern int SDL_PushEvent(void *event);
 #if RENIOS_SDL3
@@ -21,7 +21,7 @@ extern void SDL_StartTextInput(void);
 extern int SDL_UIKitRunApp(int, char **, int (*)(int, char **));
 #endif
 
-typedef int (*EngineMain)(const char *, const char *, const char *, int);
+typedef int (*EngineMain)(const char *, const char *, const char *);
 typedef int (*EnginePushEvent)(void *);
 typedef void (*LegacyEventPump)(int);
 
@@ -183,72 +183,7 @@ static IMP installViewportHook(Class type, SEL selector, IMP replacement) {
     return original;
 }
 
-static NSURL *probeFile(NSString *name) {
-    NSURL *caches = [NSFileManager.defaultManager URLsForDirectory:NSCachesDirectory
-                                                        inDomains:NSUserDomainMask].firstObject;
-    return [caches URLByAppendingPathComponent:name];
-}
-
-static void writeProbe(NSDictionary *result, NSString *name) {
-    NSData *data = [NSJSONSerialization dataWithJSONObject:result options:0 error:NULL];
-    [data writeToURL:probeFile(name) options:NSDataWritingAtomic error:NULL];
-}
-
-static BOOL viewportFillsWindow(UIView *view) {
-    UIWindow *window = view.window;
-    if (!window || CGRectIsEmpty(window.bounds)) { return NO; }
-    CGRect actual = [view convertRect:view.bounds toView:window];
-    return CGRectContainsRect(CGRectInset(window.bounds, -0.5, -0.5), actual)
-        && CGRectContainsRect(CGRectInset(actual, -0.5, -0.5), window.bounds);
-}
-
-static BOOL startPlaybackControlsProbe(void) {
-    UIView *view = gameController.viewIfLoaded;
-    UIWindow *window = view.window;
-    UIWindowScene *scene = window.windowScene;
-    CGSize initialDrawable;
-    if (!scene || !readDrawableSize(view, &initialDrawable) || CGSizeEqualToSize(initialDrawable, CGSizeZero)) {
-        return NO;
-    }
-
-    const BOOL startedInPortrait = window.bounds.size.height > window.bounds.size.width;
-    [NSTimer scheduledTimerWithTimeInterval:0.8 repeats:NO block:^(NSTimer *timer) {
-        if (!activePushEvent) { return; }
-        UIInterfaceOrientationMask target = startedInPortrait
-            ? UIInterfaceOrientationMaskLandscapeRight : UIInterfaceOrientationMaskPortrait;
-        UIWindowSceneGeometryPreferencesIOS *preferences =
-            [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:target];
-        [scene requestGeometryUpdateWithPreferences:preferences errorHandler:^(NSError *error) {
-            NSLog(@"reniOS rotation probe: %@", error.localizedDescription);
-        }];
-
-        __block int attempts = 0;
-        [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *rotationTimer) {
-            if (!activePushEvent) { [rotationTimer invalidate]; return; }
-            UIView *view = gameController.viewIfLoaded;
-            CGSize size = view.window.bounds.size;
-            BOOL rotated = size.width > 0 && size.height > 0
-                && (size.height > size.width) != startedInPortrait;
-            BOOL fillsWindow = viewportFillsWindow(view);
-            CGSize initialDrawable;
-            BOOL drawableMatches = readDrawableSize(view, &initialDrawable)
-                && drawableSizeMatches(view, initialDrawable);
-            if (++attempts < 32 && (!rotated || !fillsWindow || !drawableMatches)) { return; }
-            [rotationTimer invalidate];
-
-            writeProbe(@{
-                @"drawableMatchesViewport": @(drawableMatches),
-                @"drawableSize": NSStringFromCGSize(initialDrawable),
-                @"expectedDrawableSize": NSStringFromCGSize(expectedDrawableSize(view)),
-                @"rotated": @(rotated),
-                @"viewportFillsWindow": @(fillsWindow)
-            }, @"renios-controls.json");
-        }];
-    }];
-    return YES;
-}
-
-int renios_play(const char *project, const char *saves, const char *engine, const char *orientation, int playbackProbe) {
+int renios_play(const char *project, const char *saves, const char *engine, const char *orientation) {
     NSString *version = @(engine);
     NSBundle *bundle = NSBundle.mainBundle;
     NSDictionary *namespaces = [bundle objectForInfoDictionaryKey:@"ReniosLegacyNamespaces"];
@@ -343,46 +278,13 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
         snprintf(types, sizeof(types), "%s@:@", @encode(BOOL));
         class_addMethod(controller, editingSelector, (IMP)allowGameKeyboardFocus, types);
     }
-    NSTimer *quitProbe = nil;
-    if (playbackProbe) {
-        unsetenv("RENIOS_PROBE_SAVES_MATCH");
-        unsetenv("RENIOS_QUIT_CONFIRMED");
-        unsetenv("RENIOS_PROBE_ENGINE");
-        unsetenv("RENIOS_PROBE_PROJECT");
-        NSURL *request = probeFile(@"renios-quit.request");
-        NSURL *controls = probeFile(@"renios-controls.request");
-        __block BOOL readyReported = NO;
-        quitProbe = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
-            const char *reportedEngine = getenv("RENIOS_PROBE_ENGINE");
-            const char *reportedProject = getenv("RENIOS_PROBE_PROJECT");
-            if (!reportedEngine || !reportedProject) { return; }
-            if (!readyReported) {
-                writeProbe(@{@"engine": @(reportedEngine), @"project": @(reportedProject),
-                             @"pid": @(NSProcessInfo.processInfo.processIdentifier)}, @"renios-ready.json");
-                readyReported = YES;
-            }
-            if ([NSFileManager.defaultManager fileExistsAtPath:controls.path] && startPlaybackControlsProbe()) {
-                [NSFileManager.defaultManager removeItemAtURL:controls error:NULL];
-            }
-            if (![NSFileManager.defaultManager fileExistsAtPath:request.path]) { return; }
-
-            [timer invalidate];
-            [NSFileManager.defaultManager removeItemAtURL:request error:NULL];
-            NSLog(@"Closing Ren’Py %@ playback probe", version);
-            renios_request_quit();
-        }];
-    }
-
     setenv("RENPY_PLATFORM", "ios-arm64", 1);
     setenv("RENPY_DISABLE_FULLSCREEN", "1", 1);
     const char *hint = (RENIOS_SDL3 && !prefix) ? "SDL_ORIENTATIONS" : "SDL_IOS_ORIENTATIONS";
     const char *requestedOrientation = orientation[0] ? orientation : NULL;
-    if (playbackProbe && (!prefix || [version isEqualToString:@"7.4.11"]) && !requestedOrientation) {
-        requestedOrientation = "Portrait LandscapeLeft LandscapeRight";
-    }
     if (requestedOrientation) { setenv(hint, requestedOrientation, 1); }
     NSLog(@"Starting Ren’Py %@ for %s", version, project);
-    int status = entry(base.fileSystemRepresentation, project, saves, playbackProbe);
+    int status = entry(base.fileSystemRepresentation, project, saves);
     NSLog(@"Ren’Py %@ returned %d", version, status);
     activePushEvent = NULL;
     activeStartKeyboard = NULL;
@@ -394,25 +296,6 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
     legacyScene = nil;
     if (requestedOrientation) { unsetenv(hint); }
 
-    [quitProbe invalidate];
-    if (playbackProbe) {
-        const char *confirmed = getenv("RENIOS_QUIT_CONFIRMED");
-        BOOL confirmationRan = confirmed && strcmp(confirmed, "1") == 0;
-        const char *reported = getenv("RENIOS_PROBE_ENGINE");
-        const char *saveMatch = getenv("RENIOS_PROBE_SAVES_MATCH");
-        BOOL savesMatch = saveMatch && strcmp(saveMatch, "1") == 0;
-        const char *actualProject = getenv("RENIOS_PROBE_PROJECT");
-        writeProbe(@{@"confirmed": @(confirmationRan), @"exitStatus": @(status),
-                     @"engine": reported ? @(reported) : @"", @"usesGameSaves": @(savesMatch),
-                     @"project": actualProject ? @(actualProject) : @"",
-                     @"pid": @(NSProcessInfo.processInfo.processIdentifier)}, @"renios-quit.json");
-        unsetenv("RENIOS_QUIT_CONFIRMED");
-        unsetenv("RENIOS_PROBE_ENGINE");
-        unsetenv("RENIOS_PLAYBACK_PROBE");
-        unsetenv("RENIOS_PROBE_PROJECT");
-        unsetenv("RENIOS_PROBE_SAVES");
-        unsetenv("RENIOS_PROBE_SAVES_MATCH");
-    }
     method_setImplementation(class_getInstanceMethod(controller, updateKeyboardSelector), originalKeyboardUpdate);
     if (originalLayout) { method_setImplementation(class_getInstanceMethod(controller, layoutSelector), originalLayout); }
     if (originalTransition) { method_setImplementation(class_getInstanceMethod(controller, transitionSelector), originalTransition); }

@@ -84,7 +84,7 @@ static int startPython(const char *base, const char *script) {
     return 0;
 }
 
-int renios_engine_play(const char *base, const char *project, const char *saves, int probe) {
+int renios_engine_play(const char *base, const char *project, const char *saves) {
     char *script = NULL;
     if (asprintf(&script, "%s/main.py", base) < 0) { return -1; }
     if (idlePython) {
@@ -95,7 +95,7 @@ int renios_engine_play(const char *base, const char *project, const char *saves,
         return -1;
     }
 
-    const char *arguments[] = {script, project, "--savedir", saves, probe ? "1" : "0"};
+    const char *arguments[] = {script, project, "--savedir", saves};
     enum { argumentCount = sizeof(arguments) / sizeof(arguments[0]) };
     int status = -1;
 #if RENIOS_PY2

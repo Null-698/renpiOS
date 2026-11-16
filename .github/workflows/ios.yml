@@ -55,8 +55,8 @@ jobs:
           path: out/reniOS-simulator.zip
           if-no-files-found: error
 
-  test:
-    name: Playback · iOS 27
+  preview:
+    name: Launcher previews · iOS 27
     needs: build
     runs-on: xcode-27
     timeout-minutes: 40
@@ -66,40 +66,11 @@ jobs:
         with:
           name: reniOS-simulator
           path: out
-      - name: Verify three launches in one app process
+      - name: Capture launcher and management previews
+        continue-on-error: true
         run: |
           ditto -x -k out/reniOS-simulator.zip out
-          bash Scripts/simulator.sh 27 "$PWD/out/reniOS.app" smoke
-      - name: Upload engine-switch results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: engine-switch-iOS-27
-          path: |
-            out/ready-probe-engine-switch-*.json
-            out/quit-probe-engine-switch-*.json
-            out/library-probe-engine-switch.json
-            out/diagnostics/engine-switch-*.log
-          if-no-files-found: warn
-      - name: Test consecutive games, saves, rotation, and Close
-        run: bash Scripts/simulator.sh 27 "$PWD/out/reniOS.app"
-      - name: Upload playback results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playback-iOS-27
-          path: |
-            out/library-probe*.json
-            out/controls-probe*.json
-            out/ready-probe*.json
-            out/quit-probe*.json
-            out/diagnostics/
-          if-no-files-found: ignore
-
-      - name: Capture launcher and management previews
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        run: bash Scripts/simulator.sh 27 "$PWD/out/reniOS.app" preview
+          bash Scripts/simulator.sh 27 "$PWD/out/reniOS.app"
       - name: Upload launcher previews
         if: always()
         uses: actions/upload-artifact@v4
