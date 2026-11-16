@@ -369,11 +369,15 @@ private struct LibraryScreen: View {
                     ContentUnavailableView.search(text: filter)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                searchDock
-                    .padding(.top, wide ? 7 : 9)
             }
             .frame(maxWidth: 1320)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            searchDock
+                .padding(.top, 7)
+                .padding(.bottom, 4)
+                .background(ink)
         }
         .background(ink.ignoresSafeArea())
         .preferredColorScheme(.dark)

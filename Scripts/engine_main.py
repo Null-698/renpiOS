@@ -141,8 +141,10 @@ def record_metadata(renpy):
         cached = os.path.join(root, ".renios-archive-cover")
         if os.path.isfile(cached):
             return
+        icon_names = ("icon", "window_icon", "app_icon")
         with open(os.path.join(root, "novel.json"), "rb") as metadata:
-            if json.load(metadata).get("localCover"):
+            local = json.load(metadata).get("localCover")
+            if local and os.path.splitext(local.rsplit("/", 1)[-1])[0].lower() not in icon_names:
                 return
 
         gui = getattr(renpy.store, "gui", None)
@@ -162,7 +164,7 @@ def record_metadata(renpy):
                 rank = 1
             elif stem in menu_names:
                 rank = 2
-            elif name == icon or stem in ("icon", "window_icon", "app_icon"):
+            elif not local and (name == icon or stem in icon_names):
                 rank = 3
             else:
                 continue

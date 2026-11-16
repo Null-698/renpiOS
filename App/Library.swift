@@ -30,13 +30,17 @@ struct Novel: Codable, Identifiable, Equatable, Sendable {
     var cover: URL? {
         let fm = FileManager.default
         if let customCover, fm.fileExists(atPath: customCover.path) { return customCover }
+        let cached = root.appending(path: ".renios-archive-cover")
+        let archived = fm.fileExists(atPath: cached.path) ? cached : nil
         if let localCover, !localCover.hasPrefix("/"),
            !localCover.split(separator: "/").contains("..") {
             let candidate = root.appending(path: "game").appending(path: localCover)
-            if fm.fileExists(atPath: candidate.path) { return candidate }
+            if fm.fileExists(atPath: candidate.path) {
+                let stem = candidate.deletingPathExtension().lastPathComponent.lowercased()
+                return GameMetadata.iconNames.contains(stem) ? archived ?? candidate : candidate
+            }
         }
-        let cached = root.appending(path: ".renios-archive-cover")
-        return fm.fileExists(atPath: cached.path) ? cached : nil
+        return archived
     }
 }
 
@@ -189,14 +193,14 @@ enum LibraryStore {
             if novel.titleIsManual != true, let title = GameMetadata.displayTitle(metadata["config.name"]) {
                 novel.title = title
             }
-            novel.gameKeys = GameMetadata.identityKeys(package: nil, save: metadata["config.save_directory"],
+            novel.gameKeys = GameMetadata.identityKeys(package: novel.saveIdentity, save: metadata["config.save_directory"],
                 build: metadata["build.name"], title: metadata["config.name"])
             novel.fingerprint = GameMetadata.fingerprint(files, in: game)
             novel.localCover = GameMetadata.localCover(files: files, in: game, declarations: metadata)
             novel.developer = metadata["config.developer"]
             novel.coverScanned = true
         }
-        if novel.localCover == nil, novel.coverOverride == nil {
+        if novel.coverOverride == nil {
             let archived = novel.root.appending(path: ".renios-archive-cover")
             if fm.fileExists(atPath: archived.path), !GameMetadata.validImage(archived) {
                 try? fm.removeItem(at: archived)

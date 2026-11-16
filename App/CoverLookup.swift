@@ -104,6 +104,7 @@ struct CoverFinder: View {
     @State private var candidate: CoverLookup.Candidate?
     @State private var searching = true
     @State private var saving = false
+    @State private var previewReady = false
     @State private var message: String?
 
     var body: some View {
@@ -115,7 +116,9 @@ struct CoverFinder: View {
                     } else if let candidate, let image = candidate.image {
                         AsyncImage(url: image.thumbnail.flatMap { CoverLookup.isVNDBImage($0) ? $0 : nil } ?? image.url) { phase in
                             if let artwork = phase.image {
-                                artwork.resizable().scaledToFit()
+                                artwork.resizable().scaledToFit().onAppear { previewReady = true }
+                            } else if phase.error != nil {
+                                Color.clear.overlay { Text("Cover preview unavailable") }
                             } else {
                                 Color.clear.overlay { ProgressView() }
                             }
@@ -130,7 +133,7 @@ struct CoverFinder: View {
                         }
                         Button("Use This Cover") { install(image.url) }
                             .buttonStyle(.glassProminent)
-                            .disabled(saving)
+                            .disabled(saving || !previewReady)
                         if let url = candidate.page { Link("View on VNDB", destination: url) }
                     } else {
                         Text("No unique cover match.")

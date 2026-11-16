@@ -10,6 +10,7 @@ enum GameMetadata {
         var developer: String?
     }
 
+    static let iconNames: Set<String> = ["icon", "window_icon", "app_icon"]
     static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "webp", "avif", "heic", "bmp"]
     private static let genericNames: Set<String> = ["game", "renpy", "ren'py", "ren'py game", "ren’py game", "untitled", "mygame", "example", "unknown"]
 
@@ -85,7 +86,9 @@ enum GameMetadata {
 
     static func identityKeys(package: String?, save: String?, build: String?, title: String?) -> [String] {
         var result: [String] = []
-        if let package, package.contains("."), !["org.renpy", "com.example", "com.test"].contains(where: package.hasPrefix) {
+        if let package, package.range(of: #"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){2,}$"#,
+                                       options: .regularExpression) != nil,
+           !["org.renpy", "com.example", "com.test"].contains(where: package.hasPrefix) {
             result.append("package:" + key(package))
         }
         if let save, !machineTitle(save), key(save).count >= 4 { result.append("save:" + key(save)) }
@@ -109,6 +112,14 @@ enum GameMetadata {
         var hash = SHA256()
         let limit = 48 * 1024
         let count = folder.standardizedFileURL.pathComponents.count
+        let resources = files.filter { file in
+            !["rpy", "rpyc", "rpa", "rpyb", "pyc"].contains(file.pathExtension.lowercased())
+        }
+        for resource in resources {
+            guard let size = try? resource.resourceValues(forKeys: [.fileSizeKey]).fileSize else { return nil }
+            let path = resource.standardizedFileURL.pathComponents.dropFirst(count).joined(separator: "/")
+            hash.update(data: Data((path + "\0" + String(size) + "\0").utf8))
+        }
         for file in scripts {
             guard let handle = try? FileHandle(forReadingFrom: file),
                   let size = try? handle.seekToEnd() else { return nil }
@@ -142,7 +153,7 @@ enum GameMetadata {
             } else if path == background { rank = 1 }
             else if ["main_menu", "mainmenu", "title_screen", "title_background", "menubg", "menu_background"].contains(name) { rank = 2 }
             else if path == icon { rank = 3 }
-            else if ["icon", "window_icon", "app_icon"].contains(name) || (path.hasPrefix("gui/") && name == "title") { rank = 4 }
+            else if iconNames.contains(name) || (path.hasPrefix("gui/") && name == "title") { rank = 4 }
             else { return nil }
             return (file, part, rank)
         }.sorted { lhs, rhs in
