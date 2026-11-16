@@ -280,9 +280,11 @@ enum LibraryStore {
         if let old = current.customCover { try? fm.removeItem(at: old) }
     }
 
-    static func recordPlay(_ novel: Novel) throws {
-        var updated = novel
-        updated.lastPlayed = .now
+    static func recordPlay(_ novel: Novel, at date: Date) throws {
+        guard var updated = readNovel(in: novel.root), updated.id == novel.id else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        updated.lastPlayed = date
         try write(updated, to: novel.root)
     }
 
@@ -815,11 +817,73 @@ enum LibraryStore {
         return lines.joined(separator: "\n")
     }
 
-    static func backup(_ novel: Novel) throws -> URL {
-        let destination = URL.temporaryDirectory.appending(path: "reniOS-\(UUID().uuidString).zip")
+    enum SaveArchiveKind: String, Sendable {
+        case exported, restore
+    }
+
+    struct SaveArchive: Identifiable, Sendable {
+        let url: URL
+        let date: Date
+        var id: URL { url }
+    }
+
+    private static let archiveFolder = ".renios-backups"
+
+    private static func archiveDirectory(for novel: Novel, kind: SaveArchiveKind) -> URL {
+        novel.saves.appending(path: archiveFolder).appending(path: kind.rawValue)
+    }
+
+    static func saveArchives(for novel: Novel, kind: SaveArchiveKind) -> [SaveArchive] {
+        folders(in: archiveDirectory(for: novel, kind: kind)).compactMap { folder in
+            guard UUID(uuidString: folder.lastPathComponent) != nil,
+                  let archive = folders(in: folder).first(where: { $0.pathExtension.lowercased() == "zip" }),
+                  let values = try? archive.resourceValues(forKeys: [.isRegularFileKey, .creationDateKey]),
+                  values.isRegularFile == true else { return nil }
+            return SaveArchive(url: archive, date: values.creationDate ?? .distantPast)
+        }.sorted { ($0.date, $0.url.path) > ($1.date, $1.url.path) }
+    }
+
+    static func removeArchive(_ archive: SaveArchive, from novel: Novel, kind: SaveArchiveKind) throws {
+        let parent = archive.url.deletingLastPathComponent()
+        let directory = archiveDirectory(for: novel, kind: kind)
+        guard parent.deletingLastPathComponent().standardizedFileURL.path == directory.standardizedFileURL.path,
+              UUID(uuidString: parent.lastPathComponent) != nil else { throw ImportFailure.unsafeEntry }
+        try fm.removeItem(at: parent)
+    }
+
+    static func backup(_ novel: Novel) throws {
+        let destination = archiveDirectory(for: novel, kind: .exported)
+        let staging = URL.temporaryDirectory.appending(path: UUID().uuidString)
+        let content = staging.appending(path: "saves")
+        let output = staging.appending(path: "archive")
+        try fm.createDirectory(at: content, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: staging) }
         try fm.createDirectory(at: novel.saves, withIntermediateDirectories: true)
-        try fm.zipItem(at: novel.saves, to: destination, shouldKeepParent: false, compressionMethod: .deflate)
-        return destination
+        let files = try fm.contentsOfDirectory(at: novel.saves, includingPropertiesForKeys: nil)
+        for file in files where file.lastPathComponent != archiveFolder {
+            try fm.copyItem(at: file, to: content.appending(path: file.lastPathComponent))
+        }
+        try fm.createDirectory(at: output, withIntermediateDirectories: false)
+        try fm.zipItem(at: content, to: output.appending(path: "Saves.zip"), shouldKeepParent: false, compressionMethod: .deflate)
+        try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        try fm.moveItem(at: output, to: destination.appending(path: UUID().uuidString))
+    }
+
+    static func keepRestoreArchive(_ source: URL, for novel: Novel) throws {
+        let scoped = source.startAccessingSecurityScopedResource()
+        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+        let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard source.pathExtension.lowercased() == "zip",
+              values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw ImportFailure.unsafeEntry
+        }
+        _ = try Archive(url: source, accessMode: .read)
+        let directory = archiveDirectory(for: novel, kind: .restore)
+        let staging = directory.appending(path: ".incoming-\(UUID().uuidString)")
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: staging) }
+        try fm.copyItem(at: source, to: staging.appending(path: source.lastPathComponent))
+        try fm.moveItem(at: staging, to: directory.appending(path: UUID().uuidString))
     }
 
     static func update(_ novel: Novel) throws {

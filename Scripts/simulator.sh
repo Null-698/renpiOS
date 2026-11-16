@@ -49,7 +49,7 @@ if ! is_current_install; then
   fi
 fi
 mkdir -p out/launcher-preview
-for screen in Library Overview Saves Mods Export Restore landscape; do
+for screen in Library Overview Saves Mods Export Restore Insights landscape landscape-open; do
   bounded 15 xcrun simctl terminate "$udid" "$bundle" >/dev/null 2>&1 || true
   if bounded 45 xcrun simctl launch --terminate-running-process "$udid" "$bundle" --launcher-preview "$screen"; then
     sleep 3

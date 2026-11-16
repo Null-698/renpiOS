@@ -151,42 +151,41 @@ struct ModManager: View {
     @State private var message: String?
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                ManagementPanel("Installed mods", icon: "puzzlepiece.extension") {
-                    if mods.isEmpty {
-                        Text("No mods installed.").font(.subheadline).foregroundStyle(.secondary)
+        List {
+            Button("Add Mod ZIP", systemImage: "plus") { chooseZIP() }
+                .disabled(working)
+            if mods.isEmpty {
+                Text("No mods installed.").font(.subheadline).foregroundStyle(.secondary)
+            }
+            ForEach(mods) { mod in
+                HStack {
+                    Toggle(isOn: Binding(get: { mod.enabled }, set: { enabled in
+                        run { try LibraryStore.setMod(mod.id, enabled: enabled, on: novel) }
+                    })) {
+                        Text(mod.name).lineLimit(2)
                     }
-                    ForEach(mods) { mod in
-                        HStack {
-                            Toggle(isOn: Binding(get: { mod.enabled }, set: { enabled in
-                                run { try LibraryStore.setMod(mod.id, enabled: enabled, on: novel) }
-                            })) {
-                                Text(mod.name).lineLimit(2)
-                            }
-                            Menu {
-                                Button("Replace ZIP", systemImage: "arrow.triangle.2.circlepath") {
-                                    chooseZIP(replacing: mod.id)
-                                }
-                                Button("Remove Mod", systemImage: "trash", role: .destructive) {
-                                    removing = mod
-                                }
-                            } label: {
-                                Image(systemName: "ellipsis.circle").frame(width: 44, height: 44)
-                            }
-                            .accessibilityLabel("Options for \(mod.name)")
+                    Menu {
+                        Button("Replace ZIP", systemImage: "arrow.triangle.2.circlepath") {
+                            chooseZIP(replacing: mod.id)
                         }
-                        .disabled(working)
+                        Button("Remove Mod", systemImage: "trash", role: .destructive) { removing = mod }
+                    } label: {
+                        Image(systemName: "ellipsis.circle").frame(width: 44, height: 44)
                     }
-                    Button("Add Mod ZIP", systemImage: "plus") { chooseZIP() }
-                        .buttonStyle(.glassProminent)
+                    .accessibilityLabel("Options for \(mod.name)")
+                }
+                .disabled(working)
+                .listRowBackground(panel)
+                .swipeActions(allowsFullSwipe: false) {
+                    Button("Remove Mod", systemImage: "trash", role: .destructive) { removing = mod }
                         .disabled(working)
-                    if working { ProgressView().accessibilityLabel("Working on mods") }
-                    if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
                 }
             }
+            if working { ProgressView().accessibilityLabel("Working on mods") }
+            if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .fileImporter(isPresented: $importing, allowedContentTypes: [.zip]) { result in
             switch result {
             case .success(let url):
@@ -250,27 +249,39 @@ struct ModManager: View {
 struct SaveExportTab: View {
     let novel: Novel
     @Binding var working: Bool
-    @State private var backup: URL?
+    @State private var archives: [LibraryStore.SaveArchive] = []
     @State private var message: String?
 
     var body: some View {
-        ScrollView {
-            ManagementPanel("Export saves", icon: "square.and.arrow.up") {
-                Text("Package this game’s saves into a ZIP.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-                if let backup {
-                    ShareLink(item: backup) { Label("Share ZIP", systemImage: "square.and.arrow.up") }
-                        .buttonStyle(.glassProminent)
-                } else {
-                    Button("Create Backup", systemImage: "archivebox") { export() }
-                        .buttonStyle(.glassProminent)
-                        .disabled(working)
+        List {
+            Button("Create Backup", systemImage: "plus") { export() }
+                .disabled(working)
+            ForEach(archives) { archive in
+                ShareLink(item: archive.url) {
+                    archiveRow("Save Backup", archive: archive, action: "square.and.arrow.up")
                 }
-                if working { ProgressView().accessibilityLabel("Creating backup") }
-                if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
+                .disabled(working)
+                .listRowBackground(panel)
+                .swipeActions(allowsFullSwipe: false) {
+                    Button("Delete Backup", systemImage: "trash", role: .destructive) {
+                        delete(archive)
+                    }
+                    .disabled(working)
+                }
             }
+            if working { ProgressView().accessibilityLabel("Creating backup") }
+            if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .onAppear { refresh() }
+    }
+
+    private func refresh() { archives = LibraryStore.saveArchives(for: novel, kind: .exported) }
+
+    private func delete(_ archive: LibraryStore.SaveArchive) {
+        do { try LibraryStore.removeArchive(archive, from: novel, kind: .exported); refresh() }
+        catch { message = error.localizedDescription }
     }
 
     private func export() {
@@ -278,9 +289,9 @@ struct SaveExportTab: View {
         message = nil
         let game = novel
         Task {
-            defer { working = false }
+            defer { working = false; refresh() }
             do {
-                backup = try await Task.detached(priority: .userInitiated) { try LibraryStore.backup(game) }.value
+                try await Task.detached(priority: .userInitiated) { try LibraryStore.backup(game) }.value
             } catch { message = error.localizedDescription }
         }
     }
@@ -289,52 +300,94 @@ struct SaveExportTab: View {
 struct SaveRestoreTab: View {
     let novel: Novel
     let session: Session
+    @State private var archives: [LibraryStore.SaveArchive] = []
     @State private var choosing = false
-    @State private var pending: URL?
-    @State private var confirming = false
+    @State private var pending: LibraryStore.SaveArchive?
     @State private var message: String?
 
     var body: some View {
-        ScrollView {
-            ManagementPanel("Restore saves", icon: "arrow.down.to.line") {
-                Text("Choose a save backup ZIP from Files.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-                Button("Choose Backup ZIP", systemImage: "folder") { choosing = true }
-                    .buttonStyle(.glassProminent)
+        List {
+            Button("Add Backup ZIP", systemImage: "plus") { choosing = true }
+                .disabled(session.isImporting)
+            ForEach(archives) { archive in
+                Button {
+                    pending = archive
+                } label: {
+                    archiveRow(archive.url.lastPathComponent, archive: archive, action: "arrow.down.to.line")
+                }
+                .disabled(session.isImporting)
+                .listRowBackground(panel)
+                .swipeActions(allowsFullSwipe: false) {
+                    Button("Remove ZIP", systemImage: "trash", role: .destructive) {
+                        do {
+                            try LibraryStore.removeArchive(archive, from: novel, kind: .restore)
+                            refresh()
+                        } catch { message = error.localizedDescription }
+                    }
                     .disabled(session.isImporting)
-                if session.isImporting { ProgressView().accessibilityLabel("Restoring saves") }
-                if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
+                }
             }
+            if session.isImporting { ProgressView().accessibilityLabel("Working with backup ZIPs") }
+            if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .fileImporter(isPresented: $choosing, allowedContentTypes: [.zip]) { result in
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .onAppear { refresh() }
+        .fileImporter(isPresented: $choosing, allowedContentTypes: [.zip], allowsMultipleSelection: true) { result in
             switch result {
-            case .success(let file):
-                pending = file
-                confirming = true
+            case .success(let files): keep(files)
             case .failure(let error): message = error.localizedDescription
             }
         }
-        .confirmationDialog("Restore saves?", isPresented: $confirming, titleVisibility: .visible) {
-            Button("Keep Existing Saves") { restore(replacing: false) }
-            Button("Replace Matching Saves", role: .destructive) { restore(replacing: true) }
-            Button("Cancel", role: .cancel) { pending = nil }
-        } message: {
-            if let pending { Text(pending.lastPathComponent) }
+        .confirmationDialog("Restore saves?", isPresented: Binding(
+            get: { pending != nil }, set: { if !$0 { pending = nil } }
+        ), titleVisibility: .visible, presenting: pending) { archive in
+            Button("Keep Existing Saves") { restore(archive, replacing: false) }
+            Button("Replace Matching Saves", role: .destructive) { restore(archive, replacing: true) }
+        } message: { archive in
+            Text(archive.url.lastPathComponent)
         }
     }
 
-    private func restore(replacing: Bool) {
-        guard let archive = pending else { return }
+    private func refresh() { archives = LibraryStore.saveArchives(for: novel, kind: .restore) }
+
+    private func keep(_ files: [URL]) {
+        session.isImporting = true
+        let game = novel
+        Task {
+            defer { session.isImporting = false; refresh() }
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    for file in files { try LibraryStore.keepRestoreArchive(file, for: game) }
+                }.value
+            } catch { message = error.localizedDescription }
+        }
+    }
+
+    private func restore(_ archive: LibraryStore.SaveArchive, replacing: Bool) {
         pending = nil
         message = nil
         Task {
             do {
-                let count = try await session.restore(archive, to: novel, replacing: replacing)
+                let count = try await session.restore(archive.url, to: novel, replacing: replacing)
                 message = count == 0 ? "All matching saves were kept." : "Restored \(count) save file(s)."
             } catch { message = error.localizedDescription }
         }
     }
+}
+
+private func archiveRow(_ title: String, archive: LibraryStore.SaveArchive, action: String) -> some View {
+    HStack {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(cream).lineLimit(2)
+            Text(archive.date.formatted(date: .abbreviated, time: .shortened))
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        Spacer()
+        Image(systemName: action).foregroundStyle(amber).accessibilityHidden(true)
+    }
+    .padding(.vertical, 5)
+    .contentShape(.rect)
 }
 
 private struct ManagementPanel<Content: View>: View {

@@ -13,6 +13,7 @@ func runReniOSLibrary() {
 @Observable
 final class Session {
     var novels = LibraryStore.list()
+    let activity = PlayActivity()
     var isImporting = false
     var message: String?
     private(set) var importReview: LibraryStore.ImportPlan?
@@ -41,10 +42,13 @@ final class Session {
         LibraryStore.discardAbandonedImports()
         var previewTab: GameTab?
         var previewLandscape = false
+        var previewOpen = false
+        var previewInsights: PlayHistory?
         #if DEBUG
         if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--launcher-preview") {
             let arguments = ProcessInfo.processInfo.arguments.dropFirst(index + 1)
-            previewLandscape = arguments.contains("landscape")
+            previewOpen = arguments.contains("landscape-open")
+            previewLandscape = previewOpen || arguments.contains("landscape")
             previewTab = arguments.compactMap(GameTab.init(rawValue:)).first
             if novels.isEmpty {
                 do {
@@ -65,11 +69,21 @@ final class Session {
                     NSLog("reniOS carousel preview: %@", error.localizedDescription)
                 }
             }
+            if arguments.contains("Insights"), let game = novels.first {
+                var history = PlayHistory()
+                for offset in [0, -1, -2, -5, -6, -7, -8] {
+                    let date = Date.now.addingTimeInterval(Double(offset) * 86400)
+                    let duration = 2100 + Double(abs(offset)) * 790
+                    history.record(game: game, from: date, seconds: duration, sessionLength: duration)
+                }
+                previewInsights = history
+            }
         }
         #endif
 
         let window = makeWindow()
-        let screen = LibraryScreen(session: self, previewTab: previewTab)
+        let screen = LibraryScreen(session: self, previewTab: previewTab, previewOpen: previewOpen,
+                                   previewInsights: previewInsights)
         let host = UIHostingController(rootView: screen)
         host.view.backgroundColor = .black
         window.rootViewController = host
@@ -228,9 +242,13 @@ final class Session {
             return -1
         }
         try FileManager.default.createDirectory(at: novel.saves, withIntermediateDirectories: true)
-        try LibraryStore.recordPlay(novel)
+        let startedAt = Date.now
         let overlay = makeGameOverlay()
-        defer { overlay.isHidden = true }
+        activity.begin(novel)
+        defer {
+            activity.finish()
+            overlay.isHidden = true
+        }
         let result = novel.root.path.withCString { game in
             novel.saves.path.withCString { saves in
                 version.withCString { engine in
@@ -240,7 +258,8 @@ final class Session {
                 }
             }
         }
-        if result != 0 { message = "Ren’Py closed with code \(result)." }
+        if result == 0 { try LibraryStore.recordPlay(novel, at: startedAt) }
+        else { message = "Ren’Py closed with code \(result)." }
         return result
     }
 
@@ -271,7 +290,7 @@ private final class TouchThroughWindow: UIWindow {
     var touchTargets: [UIView] = []
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard touchTargets.contains(where: { !$0.isHidden && $0.alpha > 0.01 && $0.bounds.contains(convert(point, to: $0)) }) else { return nil }
+        guard touchTargets.contains(where: { !$0.isHidden && $0.isUserInteractionEnabled && $0.alpha > 0.01 && $0.bounds.contains(convert(point, to: $0)) }) else { return nil }
         return super.hitTest(point, with: event)
     }
 }
@@ -281,43 +300,105 @@ private final class PlaybackControlsController: UIViewController {
     let handle = UIButton(type: .system)
     let bar = UIStackView()
     private var hideTask: Task<Void, Never>?
+    private var expanded = false
+    private var dragging = false
+    private var dragOrigin = CGPoint.zero
+    private var dragPosition: CGPoint?
+    private var dock = CGPoint(x: 1, y: 0)
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .clear
+        if let saved = UserDefaults.standard.array(forKey: "playbackControlsPosition") as? [Double],
+           saved.count == 2, saved.allSatisfy({ $0.isFinite && (0...1).contains($0) }) {
+            dock = CGPoint(x: saved[0], y: saved[1])
+        }
 
-        handle.configuration = configuration("ellipsis", tint: .white)
+        handle.configuration = configuration("ellipsis")
         handle.accessibilityLabel = "Show Game Controls"
         handle.addAction(UIAction { [weak self] _ in self?.setExpanded(true) }, for: .touchUpInside)
-        handle.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(handle)
 
         bar.axis = .horizontal
         bar.spacing = 4
         bar.alignment = .center
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        bar.addArrangedSubview(button("Close Game", "xmark") { renios_request_quit() })
-        bar.addArrangedSubview(button("Skip", "forward.end") { renios_playback_key(43, 9) })
-        bar.addArrangedSubview(button("Previous", "backward.end") { renios_playback_key(75, 1 << 30 | 75) })
+        bar.addArrangedSubview(button("Hide Game Controls", "chevron.down") { [weak self] in self?.setExpanded(false) })
+        bar.addArrangedSubview(button("Previous", "backward.end.fill") { renios_playback_key(75, 1 << 30 | 75) })
+        bar.addArrangedSubview(button("Skip", "forward.end.fill") { renios_playback_key(43, 9) })
         bar.addArrangedSubview(button("Game Settings", "gearshape") { renios_playback_key(41, 27) })
         bar.addArrangedSubview(button("Show or Hide Keyboard", "keyboard") { renios_toggle_keyboard() })
-        bar.addArrangedSubview(button("Hide Game Controls", "chevron.right") {})
+        bar.addArrangedSubview(button("Close Game", "xmark", tint: .systemOrange) { [weak self] in
+            self?.setExpanded(false)
+            renios_request_quit()
+        })
         view.addSubview(bar)
-        bar.isHidden = true
-
-        let guide = view.safeAreaLayoutGuide
-        NSLayoutConstraint.activate([
-            handle.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -8),
-            handle.topAnchor.constraint(equalTo: guide.topAnchor, constant: 6),
-            handle.widthAnchor.constraint(equalToConstant: 44),
-            handle.heightAnchor.constraint(equalToConstant: 44),
-            bar.trailingAnchor.constraint(equalTo: handle.trailingAnchor),
-            bar.topAnchor.constraint(equalTo: handle.topAnchor),
-            bar.leadingAnchor.constraint(greaterThanOrEqualTo: guide.leadingAnchor, constant: 8)
-        ])
+        bar.alpha = 0
+        if !UIAccessibility.isReduceMotionEnabled { bar.transform = CGAffineTransform(scaleX: 0.87, y: 0.87) }
+        bar.isUserInteractionEnabled = false
+        bar.accessibilityElementsHidden = true
+        for target in [handle as UIView, bar] {
+            target.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(drag(_:))))
+        }
     }
 
-    private func configuration(_ symbol: String, tint: UIColor) -> UIButton.Configuration {
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        positionControls()
+    }
+
+    private var available: CGRect {
+        let frame = view.safeAreaLayoutGuide.layoutFrame
+        return (frame.isEmpty ? view.bounds : frame).insetBy(dx: 7, dy: 6)
+    }
+
+    private func positionControls() {
+        let bounds = available
+        let barWidth = CGFloat(bar.arrangedSubviews.count) * 44 + CGFloat(bar.arrangedSubviews.count - 1) * bar.spacing
+        // Both layouts share a proportional position within their usable ranges.
+        func frame(width: CGFloat) -> CGRect {
+            let horizontal = max(0, bounds.width - width)
+            let vertical = max(0, bounds.height - 44)
+            let x = dragPosition.map { min(max($0.x - bounds.minX - width / 2, 0), horizontal) }
+                ?? horizontal * dock.x
+            let y = dragPosition.map { min(max($0.y - bounds.minY - 22, 0), vertical) }
+                ?? vertical * dock.y
+            return CGRect(x: bounds.minX + x, y: bounds.minY + y, width: width, height: 44)
+        }
+        handle.bounds.size = CGSize(width: 44, height: 44)
+        bar.bounds.size = CGSize(width: barWidth, height: 44)
+        let handleFrame = frame(width: 44)
+        let barFrame = frame(width: barWidth)
+        handle.center = .init(x: handleFrame.midX, y: handleFrame.midY)
+        bar.center = .init(x: barFrame.midX, y: barFrame.midY)
+    }
+
+    @objc private func drag(_ recognizer: UIPanGestureRecognizer) {
+        guard let target = recognizer.view else { return }
+        switch recognizer.state {
+        case .began:
+            hideTask?.cancel()
+            dragging = true
+            dragOrigin = target.center
+        case .changed:
+            let translation = recognizer.translation(in: view)
+            dragPosition = CGPoint(x: dragOrigin.x + translation.x, y: dragOrigin.y + translation.y)
+            positionControls()
+        case .ended, .cancelled, .failed:
+            let bounds = available
+            let horizontal = bounds.width - target.bounds.width
+            let vertical = bounds.height - target.bounds.height
+            if horizontal > 0 { dock.x = min(max((target.frame.minX - bounds.minX) / horizontal, 0), 1) }
+            if vertical > 0 { dock.y = min(max((target.frame.minY - bounds.minY) / vertical, 0), 1) }
+            UserDefaults.standard.set([Double(dock.x), Double(dock.y)], forKey: "playbackControlsPosition")
+            dragPosition = nil
+            dragging = false
+            positionControls()
+            scheduleCollapse()
+        default: break
+        }
+    }
+
+    private func configuration(_ symbol: String, tint: UIColor = .white) -> UIButton.Configuration {
         var style = UIButton.Configuration.glass()
         style.image = UIImage(systemName: symbol)
         style.baseForegroundColor = tint
@@ -325,29 +406,45 @@ private final class PlaybackControlsController: UIViewController {
         return style
     }
 
-    private func button(_ title: String, _ symbol: String, action: @escaping @MainActor () -> Void) -> UIButton {
+    private func button(_ title: String, _ symbol: String, tint: UIColor = .white,
+                        action: @escaping @MainActor () -> Void) -> UIButton {
         let button = UIButton(type: .system)
-        button.configuration = configuration(symbol, tint: .white)
+        button.configuration = configuration(symbol, tint: tint)
         button.accessibilityLabel = title
         button.addAction(UIAction { [weak self] _ in
-            self?.setExpanded(false)
             action()
+            self?.scheduleCollapse()
         }, for: .touchUpInside)
         button.widthAnchor.constraint(equalToConstant: 44).isActive = true
         button.heightAnchor.constraint(equalToConstant: 44).isActive = true
         return button
     }
 
-    private func setExpanded(_ expanded: Bool) {
+    private func setExpanded(_ showing: Bool) {
+        guard showing != expanded else { return }
+        expanded = showing
+        handle.isUserInteractionEnabled = !showing
+        handle.accessibilityElementsHidden = showing
+        bar.isUserInteractionEnabled = showing
+        bar.accessibilityElementsHidden = !showing
+        let reduced = UIAccessibility.isReduceMotionEnabled
+        UIView.animate(withDuration: reduced ? 0.12 : 0.28, delay: 0,
+                       options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseInOut]) {
+            self.handle.alpha = showing ? 0 : 1
+            self.bar.alpha = showing ? 1 : 0
+            self.handle.transform = showing && !reduced ? CGAffineTransform(scaleX: 0.78, y: 0.78) : .identity
+            self.bar.transform = showing || reduced ? .identity : CGAffineTransform(scaleX: 0.87, y: 0.87)
+        }
+        scheduleCollapse()
+    }
+
+    private func scheduleCollapse() {
         hideTask?.cancel()
-        handle.isHidden = expanded
-        bar.isHidden = !expanded
-        if expanded {
-            hideTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(8))
-                guard !Task.isCancelled else { return }
-                self?.setExpanded(false)
-            }
+        guard expanded, !dragging else { return }
+        hideTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            self?.setExpanded(false)
         }
     }
 }
@@ -360,7 +457,7 @@ let panel = Color(red: 0.085, green: 0.095, blue: 0.13)
 private struct LibraryScreen: View {
     @Environment(\.dynamicTypeSize) private var dynamicType
     var session: Session
-    var previewTab: GameTab?
+    let previewInsights: PlayHistory?
     @State private var importing = false
     @State private var filter = ""
     @State private var selected: Novel?
@@ -368,13 +465,21 @@ private struct LibraryScreen: View {
     @State private var showingImportReview = false
     @State private var gameToLaunch: Novel?
     @State private var highlightedID: Novel.ID?
+    @State private var openedID: Novel.ID?
+    @State private var showingInsights = false
     @FocusState private var searching: Bool
     @FocusState private var focusedGame: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(session: Session, previewTab: GameTab? = nil) {
+    init(session: Session, previewTab: GameTab?, previewOpen: Bool, previewInsights: PlayHistory?) {
         self.session = session
-        self.previewTab = previewTab
+        self.previewInsights = previewInsights
+        if previewOpen {
+            let id = session.novels.first?.id
+            _openedID = State(initialValue: id)
+            _highlightedID = State(initialValue: id)
+        }
+        _showingInsights = State(initialValue: previewInsights != nil)
         _selected = State(initialValue: previewTab == nil ? nil : session.novels.first)
         _selectedTab = State(initialValue: previewTab ?? .overview)
     }
@@ -389,17 +494,22 @@ private struct LibraryScreen: View {
             let wide = geometry.size.width >= 500 && geometry.size.width > geometry.size.height && !dynamicType.isAccessibilitySize
             let games = visibleNovels
 
+            let feature = games.first(where: { $0.id == highlightedID }) ?? games.first
             VStack(spacing: 0) {
                 header
                     .padding(.horizontal, 20)
                     .padding(.bottom, wide ? 9 : 13)
-                if let feature = games.first(where: { $0.id == highlightedID }) ?? games.first {
+                if showingInsights {
+                    InsightsView(history: previewInsights ?? session.activity.history,
+                                 titles: Dictionary(uniqueKeysWithValues: session.novels.map { ($0.id, $0.title) }))
+                        .transition(.opacity)
+                } else if let feature {
                     if wide && searching {
                         landscapeSearchResults(games)
                     } else if wide {
                         landscape(feature: feature, games: games)
                     } else {
-                        portrait(feature: feature, games: games)
+                        portrait(games: games)
                     }
                 } else if session.novels.isEmpty {
                     emptyLibrary
@@ -410,12 +520,19 @@ private struct LibraryScreen: View {
             }
             .frame(maxWidth: 1320)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background {
+                if wide && !showingInsights && !searching, let feature {
+                    RadialGradient(colors: [carouselTint(feature).opacity(0.25), ink], center: .top,
+                                   startRadius: 10, endRadius: geometry.size.width * 0.72)
+                        .ignoresSafeArea()
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.32), value: feature.id)
+                }
+            }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            searchDock
-                .padding(.top, 7)
-                .padding(.bottom, 4)
-                .background(ink)
+            if !showingInsights {
+                searchDock.padding(.top, 7).padding(.bottom, 4)
+            }
         }
         .background(ink.ignoresSafeArea())
         .preferredColorScheme(.dark)
@@ -473,32 +590,49 @@ private struct LibraryScreen: View {
                 .fill(.white.opacity(0.15))
                 .frame(width: 1, height: 15)
                 .accessibilityHidden(true)
-            Text("Library")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.secondary)
-                .accessibilityAddTraits(.isHeader)
+            libraryTab("Library", insights: false)
+            libraryTab("Insights", insights: true)
             Spacer()
             if session.isImporting {
                 ProgressView()
                     .controlSize(.small)
                     .accessibilityLabel("Importing")
             }
-            Menu {
-                Button("Import Game", systemImage: "folder") {
-                    searching = false
-                    importing = true
+            if !showingInsights {
+                Menu {
+                    Button("Import Game", systemImage: "folder") {
+                        searching = false
+                        importing = true
+                    }
+                    Button("Add Sample", systemImage: "sparkle") { session.add(nil) }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                        .background(.white.opacity(0.075), in: .circle)
                 }
-                Button("Add Sample", systemImage: "sparkle") { session.add(nil) }
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 44, height: 44)
-                    .background(.white.opacity(0.075), in: .circle)
+                .accessibilityLabel("Add to Library")
+                .accessibilityIdentifier("importGame")
+                .disabled(session.isImporting)
             }
-            .accessibilityLabel("Add to Library")
-            .accessibilityIdentifier("importGame")
-            .disabled(session.isImporting)
         }
+    }
+
+    private func libraryTab(_ title: String, insights: Bool) -> some View {
+        let active = showingInsights == insights
+        return Button {
+            searching = false
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { showingInsights = insights }
+        } label: {
+            Text(title)
+                .font(.subheadline.weight(active ? .semibold : .medium))
+                .foregroundStyle(active ? amber : .secondary)
+                .padding(.horizontal, 4)
+                .frame(minHeight: 44)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(active ? .isSelected : [])
     }
 
     private var searchDock: some View {
@@ -532,55 +666,37 @@ private struct LibraryScreen: View {
     private func landscape(feature: Novel, games: [Novel]) -> some View {
         GeometryReader { geometry in
             let width = geometry.size.width
-            let cardWidth = min(580, width * 0.58)
-            let cardHeight = max(92, geometry.size.height - 78)
-            let index = games.firstIndex { $0.id == feature.id } ?? 0
-            let tint = carouselTint(feature)
+            let cardWidth = min(640, width * 0.66)
+            let cardHeight = max(106, geometry.size.height - 18)
 
-            ZStack {
-                RadialGradient(colors: [tint.opacity(0.25), ink],
-                               center: .top, startRadius: 10, endRadius: width * 0.56)
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.30), value: feature.id)
-                VStack(spacing: 8) {
-                    ScrollView(.horizontal) {
-                        LazyHStack(spacing: 14) {
-                            ForEach(games) { game in
-                                carouselCard(game, selected: feature.id == game.id,
-                                             width: cardWidth, height: cardHeight)
-                                    .scrollTransition(.interactive, axis: .horizontal) { content, phase in
-                                        content
-                                            .scaleEffect(reduceMotion || phase.isIdentity ? 1 : 0.89)
-                                            .opacity(reduceMotion || phase.isIdentity ? 1 : 0.58)
-                                    }
-                                    .id(game.id)
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: 16) {
+                    ForEach(games) { game in
+                        carouselCard(game, selected: feature.id == game.id, width: cardWidth, height: cardHeight)
+                            .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                                content
+                                    .scaleEffect(reduceMotion || phase.isIdentity ? 1 : 0.89)
+                                    .opacity(reduceMotion || phase.isIdentity ? 1 : 0.58)
                             }
-                        }
-                        .scrollTargetLayout()
+                            .id(game.id)
                     }
-                    .contentMargins(.horizontal, (width - cardWidth) / 2, for: .scrollContent)
-                    .scrollPosition(id: $highlightedID, anchor: .center)
-                    .scrollTargetBehavior(.viewAligned(limitBehavior: .alwaysByOne, anchor: .center))
-                    .scrollBounceBehavior(.basedOnSize)
-                    .scrollIndicators(.hidden)
-                    .frame(height: cardHeight + 4)
-
-                    HStack(spacing: 8) {
-                        carouselArrow(.leading, to: index > 0 ? games[index - 1].id : nil)
-                        Button("Play", systemImage: "play.fill") { session.launch(feature) }
-                            .buttonStyle(.glassProminent)
-                            .disabled(session.isImporting || Session.engine(for: feature) == nil)
-                        Button("Details", systemImage: "ellipsis") { showDetails(feature) }
-                            .buttonStyle(.glass)
-                        carouselArrow(.trailing, to: index + 1 < games.count ? games[index + 1].id : nil)
-                    }
-                    .font(.subheadline.weight(.semibold))
-                    .padding(.bottom, 6)
                 }
-                .padding(.top, 7)
+                .scrollTargetLayout()
             }
+            .contentMargins(.horizontal, (width - cardWidth) / 2, for: .scrollContent)
+            .scrollPosition(id: $highlightedID, anchor: .center)
+            .scrollTargetBehavior(.viewAligned(limitBehavior: .alwaysByOne, anchor: .center))
+            .scrollBounceBehavior(.basedOnSize)
+            .scrollIndicators(.hidden)
+            .frame(height: cardHeight + 8)
             .onChange(of: games.map(\.id), initial: true) {
                 if !games.contains(where: { $0.id == highlightedID }) {
                     highlightedID = games.first?.id
+                }
+            }
+            .onChange(of: highlightedID) { _, id in
+                if let openedID, openedID != id {
+                    withAnimation(carouselMotion) { self.openedID = nil }
                 }
             }
             .onChange(of: focusedGame) { _, id in
@@ -589,60 +705,96 @@ private struct LibraryScreen: View {
         }
     }
 
+    private var carouselMotion: Animation? {
+        reduceMotion ? nil : .spring(response: 0.48, dampingFraction: 0.86)
+    }
+
     private func carouselCard(_ game: Novel, selected: Bool, width: CGFloat, height: CGFloat) -> some View {
-        Button {
-            if selected { showDetails(game) }
-            else { centerGame(game.id) }
+        let open = openedID == game.id
+        let cover = Button {
+            withAnimation(carouselMotion) {
+                highlightedID = game.id
+                openedID = open ? nil : game.id
+            }
         } label: {
             CoverArt(url: game.cover, tint: carouselTint(game))
-                .frame(width: width, height: height)
                 .overlay {
                     LinearGradient(colors: [.clear, .black.opacity(0.84)], startPoint: .center, endPoint: .bottom)
                 }
                 .overlay(alignment: .bottomLeading) {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 5) {
                         Text(game.title)
-                            .font(.system(size: min(35, max(18, height * 0.19)), weight: .semibold, design: .serif))
+                            .font(.system(size: min(36, max(19, height * 0.18)), weight: .semibold, design: .serif))
                             .lineLimit(2)
-                        if let version = game.gameVersion {
-                            Text(version).font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.77))
-                        }
+                        gameVersions(game)
                     }
                     .foregroundStyle(cream)
                     .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, 11)
                 }
                 .clipShape(.rect(cornerRadius: 19))
                 .overlay {
                     RoundedRectangle(cornerRadius: 19)
-                        .strokeBorder(selected ? amber.opacity(0.80) : .white.opacity(0.16), lineWidth: selected ? 2 : 1)
+                        .strokeBorder(selected ? amber.opacity(0.8) : .white.opacity(0.16), lineWidth: selected ? 2 : 1)
                 }
+                .contentShape(.rect(cornerRadius: 19))
         }
         .buttonStyle(.plain)
         .focused($focusedGame, equals: game.id)
         .accessibilityLabel(game.title)
+        .accessibilityHint(open ? "Hide game actions" : "Show game actions")
         .accessibilityAddTraits(selected ? .isSelected : [])
+
+        return ZStack(alignment: .trailing) {
+            if open {
+                RoundedRectangle(cornerRadius: 19)
+                    .fill(panel.opacity(0.88))
+                    .overlay { RoundedRectangle(cornerRadius: 19).strokeBorder(.white.opacity(0.12)) }
+                    .transition(.opacity)
+            }
+            cover
+                .frame(width: reduceMotion && open ? width * 0.52 : width, height: height)
+                .rotation3DEffect(.degrees(open && !reduceMotion ? -63 : 0), axis: (x: 0, y: 1, z: 0),
+                                  anchor: .leading, perspective: 0.48)
+                .frame(width: width, alignment: .leading)
+            if open {
+                VStack(alignment: .leading, spacing: 9) {
+                    Button("Play", systemImage: "play.fill") { session.launch(game) }
+                        .buttonStyle(.glassProminent)
+                        .disabled(session.isImporting || Session.engine(for: game) == nil)
+                    Button("Details", systemImage: "info.circle") { showDetails(game) }
+                        .buttonStyle(.glass)
+                }
+                .font(.subheadline.weight(.semibold))
+                .frame(width: width * 0.36)
+                .transition(reduceMotion ? .opacity : .offset(x: 16, y: 0).combined(with: .opacity))
+            }
+        }
+        .frame(width: width, height: height)
     }
 
     private func centerGame(_ id: Novel.ID) {
-        withAnimation(reduceMotion ? nil : .smooth(duration: 0.35)) { highlightedID = id }
+        withAnimation(carouselMotion) { highlightedID = id }
     }
 
     private func carouselTint(_ game: Novel) -> Color {
-        let index = game.title.utf8.reduce(0) { ($0 + Int($1)) % 4 }
+        let index = game.title.utf8.reduce(0) { ($0 * 31 + Int($1)) % 4 }
         return [amber, Color(red: 0.56, green: 0.63, blue: 0.97),
                 Color(red: 0.48, green: 0.81, blue: 0.70), Color(red: 0.91, green: 0.54, blue: 0.64)][index]
     }
 
-    private func carouselArrow(_ direction: Edge, to game: Novel.ID?) -> some View {
-        let previous = direction == .leading
-        return Button(previous ? "Previous Game" : "Next Game",
-                      systemImage: previous ? "chevron.left" : "chevron.right") {
-            if let game { centerGame(game) }
+    private func gameVersions(_ game: Novel) -> some View {
+        HStack(spacing: 7) {
+            if let version = game.gameVersion { Text("v \(version)") }
+            if let engine = game.detectedEngine {
+                Text("Ren’Py \(engine)").foregroundStyle(amber)
+            } else if let engine = Session.engine(for: game) {
+                Text("Ren’Py \(engine) auto").foregroundStyle(amber)
+            }
         }
-        .labelStyle(.iconOnly)
-        .buttonStyle(.glass)
-        .disabled(game == nil)
+        .font(.caption2.monospacedDigit().weight(.medium))
+        .foregroundStyle(.white.opacity(0.84))
+        .lineLimit(1)
     }
 
     private func landscapeSearchResults(_ games: [Novel]) -> some View {
@@ -658,11 +810,21 @@ private struct LibraryScreen: View {
         .scrollDismissesKeyboard(.interactively)
     }
 
-    private func portrait(feature: Novel, games: [Novel]) -> some View {
-        ScrollView {
+    private func portrait(games: [Novel]) -> some View {
+        let lastPlayed = session.novels.filter { $0.lastPlayed != nil }.max {
+            ($0.lastPlayed ?? .distantPast) < ($1.lastPlayed ?? .distantPast)
+        }
+        return ScrollView {
             VStack(alignment: .leading, spacing: 21) {
-                featureCard(feature, compact: false)
-                    .frame(minHeight: 248)
+                if filter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   let feature = lastPlayed ?? games.first {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if lastPlayed != nil {
+                            Text("Last Played").font(.headline).accessibilityAddTraits(.isHeader)
+                        }
+                        featureCard(feature, compact: false).frame(minHeight: 238)
+                    }
+                }
                 HStack {
                     Text("Games").font(.headline).accessibilityAddTraits(.isHeader)
                     Spacer()
@@ -674,6 +836,12 @@ private struct LibraryScreen: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 CoverArt(url: game.cover, tint: amber)
                                     .aspectRatio(1.52, contentMode: .fit)
+                                    .overlay(alignment: .bottomLeading) {
+                                        gameVersions(game)
+                                            .padding(7)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .background(.black.opacity(0.64))
+                                    }
                                     .clipShape(.rect(cornerRadius: 12))
                                 Text(game.title)
                                     .font(.subheadline.weight(.semibold))
@@ -727,11 +895,7 @@ private struct LibraryScreen: View {
                            startPoint: .top, endPoint: .bottom)
                 .allowsHitTesting(false)
             VStack(alignment: .leading, spacing: compact ? 7 : 10) {
-                if let version = Session.engine(for: game) {
-                    Label("Ren’Py \(version)", systemImage: "cpu")
-                        .font(.caption.monospaced())
-                        .foregroundStyle(amber)
-                }
+                gameVersions(game)
                 Text(game.title)
                     .font(.system(compact ? .largeTitle : .title, design: .serif).weight(.semibold))
                     .foregroundStyle(cream)
