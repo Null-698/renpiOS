@@ -537,7 +537,8 @@ enum LibraryStore {
     private static func modStore(in root: URL) -> URL { root.appending(path: ".mods") }
     private static func modBaseline(in root: URL) -> URL { root.appending(path: ".mods-original") }
     private static func legacyMod(in root: URL) -> URL { root.appending(path: ".mod") }
-    private static func modState(in game: URL) -> URL { game.appending(path: ".renios-mod-state.json") }
+    private static let modStateFilename = ".renios-mod-state.json"
+    private static func modState(in game: URL) -> URL { game.appending(path: modStateFilename) }
 
     private static func enabledMods(in game: URL) throws -> [UUID] {
         let state = modState(in: game)
@@ -1003,7 +1004,10 @@ enum LibraryStore {
         guard installedMods(for: installed).filter(\.enabled).count == 2,
               try String(contentsOf: story, encoding: .utf8) == "MOD2" else { return false }
 
-        let updatePlan = try prepareImport(newer)
+        try writeMods(installedMods(for: installed).map(\.id), in: newer.appending(path: "game"))
+        let updateZIP = fixtures.appending(path: "updated-game.zip")
+        try fm.zipItem(at: newer, to: updateZIP, shouldKeepParent: false)
+        let updatePlan = try prepareImport(updateZIP)
         defer { discardImport(updatePlan) }
         let updated = try finishImport(updatePlan, choice: .update(installed.id))
         guard updated.id == installed.id, updated.root == installed.root, updated.saves == installed.saves,
@@ -1187,6 +1191,8 @@ enum LibraryStore {
                 throw ImportFailure.unsafeEntry
             }
             let key = relative.joined(separator: "/").precomposedStringWithCanonicalMapping.lowercased()
+            // A game archive cannot set the player's active mods.
+            if key == modStateFilename { continue }
             guard destinations.insert(key).inserted else { throw ImportFailure.unsafeEntry }
             let size = UInt64(entry.uncompressedSize)
             guard size <= available else { throw ImportFailure.tooLarge }

@@ -378,6 +378,7 @@ private struct LibraryScreen: View {
     @State private var filter = ""
     @State private var selected: Novel?
     @State private var selectedTab: GameTab = .overview
+    @State private var showingImportReview = false
     @State private var gameToLaunch: Novel?
     @State private var highlightedID: Novel.ID?
     @FocusState private var searching: Bool
@@ -447,11 +448,13 @@ private struct LibraryScreen: View {
                 .presentationCompactAdaptation(.none)
         }
         .sheet(item: Binding(get: { session.importReview },
-                             set: { if $0 == nil { session.cancelImportReview() } })) { plan in
+                             set: { if $0 == nil { session.cancelImportReview() } }),
+               onDismiss: { showingImportReview = false }) { plan in
             ImportReviewSheet(plan: plan, choose: session.chooseImport, cancel: session.cancelImportReview)
+                .onAppear { showingImportReview = true }
         }
         .alert("Mods Disabled", isPresented: Binding(
-            get: { session.updatedGameWithMods != nil },
+            get: { !showingImportReview && session.updatedGameWithMods != nil },
             set: { if !$0 { session.updatedGameWithMods = nil } }
         ), presenting: session.updatedGameWithMods) { game in
             Button("Open Mods") { showDetails(game, tab: .mods) }
