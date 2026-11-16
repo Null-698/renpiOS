@@ -353,10 +353,12 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
             if ([NSFileManager.defaultManager fileExistsAtPath:controls.path] && startPlaybackControlsProbe()) {
                 [NSFileManager.defaultManager removeItemAtURL:controls error:NULL];
             }
-            if (!getenv("RENIOS_PROBE_ENGINE") || ![NSFileManager.defaultManager fileExistsAtPath:request.path]) { return; }
+            if (!gameController.viewIfLoaded.window || !getenv("RENIOS_PROBE_ENGINE")
+                || ![NSFileManager.defaultManager fileExistsAtPath:request.path]) { return; }
 
             [timer invalidate];
             [NSFileManager.defaultManager removeItemAtURL:request error:NULL];
+            NSLog(@"Closing Ren’Py %@ playback probe", version);
             renios_request_quit();
         }];
     }

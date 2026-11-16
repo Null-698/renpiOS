@@ -260,10 +260,15 @@ def configure_game_reload(engine):
     source, count = cleanup.subn(r"\1        renios_runtime.finish(renpy)\n", source)
     if count != 1:
         raise ValueError("Expected one Ren’Py shutdown block")
+    # The host supplies the exact installed project path.
+    source = source.replace("basedir = get_alternate_base(original_basedir)", "basedir = original_basedir")
     bootstrap.write_text(source, encoding="utf-8")
 
     module = engine / "__init__.py"
     source = module.read_text(encoding="utf-8")
+    # Keep the Objective-C class proxy out of the Python module backup.
+    source = source.replace("if name in backup_blacklist:",
+                            'if name in backup_blacklist or name == "renpy.audio.ioshw":')
     source = source.replace("        if mobile:\n            return\n",
                             "        if mobile and not ios:\n            return\n")
     source = source.replace("    if not mobile:\n        backup = Backup()",

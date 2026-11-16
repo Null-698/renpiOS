@@ -53,17 +53,17 @@ if [[ "$state" == Shutdown ]]; then
   bounded 150 xcrun simctl boot "$udid"
 fi
 bounded 240 xcrun simctl bootstatus "$udid" -b
-if [[ "$mode" == preview || ! -f out/launcher-preview/.installed ]]; then
+if [[ ! -f out/.simulator-installed ]]; then
   bounded 240 xcrun simctl install "$udid" "$app"
+  touch out/.simulator-installed
 fi
 data=$(xcrun simctl get_app_container "$udid" "$bundle" data)
 
 if [[ "$mode" == preview ]]; then
   mkdir -p out/launcher-preview
-  touch out/launcher-preview/.installed
   for screen in Library Overview Saves Mods Export Restore landscape; do
     bounded 15 xcrun simctl terminate "$udid" "$bundle" >/dev/null 2>&1 || true
-    if bounded 45 xcrun simctl launch "$udid" "$bundle" --launcher-preview "$screen"; then
+    if bounded 45 xcrun simctl launch --terminate-running-process "$udid" "$bundle" --launcher-preview "$screen"; then
       sleep 3
       if ! bounded 30 xcrun simctl io "$udid" screenshot --display=1 "out/launcher-preview/$screen.png"; then
         echo "::warning::Could not capture the $screen preview"
@@ -94,7 +94,7 @@ probe_playback() {
   rm -f "$cache"/renios-{library.json,quit.json,quit.request,controls.json,controls.request}
 
   echo "Testing Ren’Py session: $*"
-  bounded 90 xcrun simctl launch --stdout="$PWD/out/diagnostics/$label-stdout.log" \
+  bounded 90 xcrun simctl launch --terminate-running-process --stdout="$PWD/out/diagnostics/$label-stdout.log" \
     --stderr="$PWD/out/diagnostics/$label-stderr.log" "$udid" "$bundle" --playback-probe "$@" || return
   wait_for_probe "$cache/renios-library.json" || return
   cp "$cache/renios-library.json" "out/library-probe-$label.json" || return
@@ -135,11 +135,15 @@ probe_playback() {
   done
 }
 
-failed=()
-if ! probe_playback engine-switch false 8.6.0 7.4.11 8.6.0; then
-  failed+=(engine-switch)
-  tail -60 out/diagnostics/engine-switch-stderr.log || true
+if [[ "$mode" == smoke ]]; then
+  if ! probe_playback engine-switch false 8.6.0 7.4.11 8.6.0; then
+    tail -100 out/diagnostics/engine-switch-stderr.log || true
+    exit 1
+  fi
+  exit 0
 fi
+
+failed=()
 while IFS= read -r engine; do
   rotation=false
   if [[ "$engine" == 8.6.0 || "$engine" == 7.4.11 ]]; then

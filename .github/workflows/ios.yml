@@ -66,24 +66,22 @@ jobs:
         with:
           name: reniOS-simulator
           path: out
-      - name: Capture launcher and management previews
-        continue-on-error: true
+      - name: Verify three launches in one app process
         run: |
           ditto -x -k out/reniOS-simulator.zip out
-          bash Scripts/simulator.sh 27 "$PWD/out/reniOS.app" preview
-      - name: Upload launcher previews
+          bash Scripts/simulator.sh 27 "$PWD/out/reniOS.app" smoke
+      - name: Upload engine-switch results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: launcher-previews-iOS-27
-          path: out/launcher-preview/*.png
+          name: engine-switch-iOS-27
+          path: |
+            out/quit-probe-engine-switch-*.json
+            out/library-probe-engine-switch.json
+            out/diagnostics/engine-switch-*.log
           if-no-files-found: warn
-      - name: Test consecutive games, engine switching, saves, rotation, and Close
-        run: |
-          if [[ ! -f out/reniOS.app/Info.plist ]]; then
-            ditto -x -k out/reniOS-simulator.zip out
-          fi
-          bash Scripts/simulator.sh 27 "$PWD/out/reniOS.app"
+      - name: Test consecutive games, saves, rotation, and Close
+        run: bash Scripts/simulator.sh 27 "$PWD/out/reniOS.app"
       - name: Upload playback results
         if: always()
         uses: actions/upload-artifact@v4
@@ -95,3 +93,14 @@ jobs:
             out/quit-probe*.json
             out/diagnostics/
           if-no-files-found: ignore
+
+      - name: Capture launcher and management previews
+        continue-on-error: true
+        run: bash Scripts/simulator.sh 27 "$PWD/out/reniOS.app" preview
+      - name: Upload launcher previews
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher-previews-iOS-27
+          path: out/launcher-preview/*.png
+          if-no-files-found: warn

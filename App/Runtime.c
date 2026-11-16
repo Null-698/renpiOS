@@ -15,7 +15,9 @@ extern void PyEval_RestoreThread(PyThreadState *);
 extern int PyRun_SimpleString(const char *);
 extern int Py_IgnoreEnvironmentFlag;
 extern int Py_NoUserSiteDirectory;
-#define RUN_GAME "import renios_runtime; renios_runtime.play()"
+#define RUN_GAME "import sys; " \
+    "base = sys.argv[0].rsplit('/', 1)[0]; sys.path[:] = [base] + [p for p in sys.path if p != base]; " \
+    "import renios_runtime; renios_runtime.play()"
 #define STRINGIFY_VALUE(value) #value
 #define STRINGIFY(value) STRINGIFY_VALUE(value)
 #if RENIOS_PY2
@@ -100,7 +102,7 @@ int renios_engine_play(const char *base, const char *project, const char *saves,
     char *argv[argumentCount];
     for (int i = 0; i < argumentCount; ++i) { argv[i] = (char *)arguments[i]; }
     PySys_SetArgvEx(argumentCount, argv, 0);
-    status = PyRun_SimpleString("import sys; sys.path[:0] = [p for p in (sys.argv[0].rsplit('/', 1)[0],) if p not in sys.path]; " RUN_GAME);
+    status = PyRun_SimpleString(RUN_GAME);
 #else
     wchar_t *argv[argumentCount] = {0};
     int converted = 0;
