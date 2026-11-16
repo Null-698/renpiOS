@@ -43,10 +43,12 @@ final class Session {
         var previewTab: GameTab?
         var previewLandscape = false
         var previewOpen = false
+        var previewName: String?
         var previewInsights: PlayHistory?
         #if DEBUG
         if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--launcher-preview") {
             let arguments = ProcessInfo.processInfo.arguments.dropFirst(index + 1)
+            previewName = arguments.first
             previewOpen = arguments.contains("landscape-open")
             previewLandscape = previewOpen || arguments.contains("landscape")
             previewTab = arguments.compactMap(GameTab.init(rawValue:)).first
@@ -83,7 +85,8 @@ final class Session {
 
         let window = makeWindow()
         let screen = LibraryScreen(session: self, previewTab: previewTab, previewOpen: previewOpen,
-                                   previewInsights: previewInsights)
+                                   previewInsights: previewInsights, previewName: previewName,
+                                   previewLandscape: previewLandscape)
         let host = UIHostingController(rootView: screen)
         host.view.backgroundColor = .black
         window.rootViewController = host
@@ -458,6 +461,8 @@ private struct LibraryScreen: View {
     @Environment(\.dynamicTypeSize) private var dynamicType
     var session: Session
     let previewInsights: PlayHistory?
+    let previewName: String?
+    let previewLandscape: Bool
     @State private var importing = false
     @State private var filter = ""
     @State private var selected: Novel?
@@ -471,9 +476,12 @@ private struct LibraryScreen: View {
     @FocusState private var focusedGame: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(session: Session, previewTab: GameTab?, previewOpen: Bool, previewInsights: PlayHistory?) {
+    init(session: Session, previewTab: GameTab?, previewOpen: Bool, previewInsights: PlayHistory?,
+         previewName: String?, previewLandscape: Bool) {
         self.session = session
         self.previewInsights = previewInsights
+        self.previewName = previewName
+        self.previewLandscape = previewLandscape
         if previewOpen {
             let id = session.novels.first?.id
             _openedID = State(initialValue: id)
@@ -520,6 +528,13 @@ private struct LibraryScreen: View {
             }
             .frame(maxWidth: 1320)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .task(id: wide) {
+                guard let previewName, wide == previewLandscape else { return }
+                try? await Task.sleep(for: .milliseconds(850))
+                guard !Task.isCancelled else { return }
+                let marker = URL.cachesDirectory.appending(path: "renios-preview.txt")
+                try? Data(previewName.utf8).write(to: marker, options: .atomic)
+            }
             .background {
                 if wide && !showingInsights && !searching, let feature {
                     RadialGradient(colors: [carouselTint(feature).opacity(0.25), ink], center: .top,
@@ -786,10 +801,15 @@ private struct LibraryScreen: View {
     private func gameVersions(_ game: Novel) -> some View {
         HStack(spacing: 7) {
             if let version = game.gameVersion { Text("v \(version)") }
+            else { Text("v —").accessibilityLabel("Game version unknown") }
             if let engine = game.detectedEngine {
                 Text("Ren’Py \(engine)").foregroundStyle(amber)
-            } else if let engine = Session.engine(for: game) {
+            } else if let selection = game.engineOverride, Session.installedEngines.contains(selection) {
+                Text("Ren’Py \(selection) selected").foregroundStyle(amber)
+            } else if let engine = Session.automaticEngine(for: game) {
                 Text("Ren’Py \(engine) auto").foregroundStyle(amber)
+            } else {
+                Text("Ren’Py —").accessibilityLabel("Ren’Py version unknown")
             }
         }
         .font(.caption2.monospacedDigit().weight(.medium))

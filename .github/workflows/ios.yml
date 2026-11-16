@@ -78,3 +78,10 @@ jobs:
           name: launcher-previews-iOS-27
           path: out/launcher-preview/*.png
           if-no-files-found: warn
+      - name: Upload preview logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher-preview-logs-iOS-27
+          path: out/preview-logs/*.log
+          if-no-files-found: ignore

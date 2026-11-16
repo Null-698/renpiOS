@@ -48,14 +48,31 @@ if ! is_current_install; then
     bounded 240 xcrun simctl install "$udid" "$app"
   fi
 fi
-mkdir -p out/launcher-preview
+data=$(bounded 30 xcrun simctl get_app_container "$udid" "$bundle" data)
+ready="$data/Library/Caches/renios-preview.txt"
+mkdir -p out/launcher-preview out/preview-logs
 for screen in Library Overview Saves Mods Export Restore Insights landscape landscape-open; do
   bounded 15 xcrun simctl terminate "$udid" "$bundle" >/dev/null 2>&1 || true
-  if bounded 45 xcrun simctl launch --terminate-running-process "$udid" "$bundle" --launcher-preview "$screen"; then
-    sleep 3
-    if ! bounded 30 xcrun simctl io "$udid" screenshot --display=1 "out/launcher-preview/$screen.png"; then
-      echo "::warning::Could not capture the $screen preview"
-    fi
+  rm -f "$ready"
+  if ! launch=$(bounded 60 xcrun simctl launch --terminate-running-process \
+    --stdout="$PWD/out/preview-logs/$screen-stdout.log" --stderr="$PWD/out/preview-logs/$screen-stderr.log" \
+    "$udid" "$bundle" --launcher-preview "$screen"); then
+    echo "::warning::Could not launch the $screen preview"
+    continue
+  fi
+  pid=${launch##*: }
+  deadline=$((SECONDS + 45))
+  while [[ "$(cat "$ready" 2>/dev/null || true)" != "$screen" && "$SECONDS" -lt "$deadline" ]]; do
+    if [[ "$pid" =~ ^[0-9]+$ ]] && ! kill -0 "$pid" 2>/dev/null; then break; fi
+    sleep 1
+  done
+  if [[ "$(cat "$ready" 2>/dev/null || true)" != "$screen" ]]; then
+    echo "::warning::The $screen preview did not render"
+    tail -30 "out/preview-logs/$screen-stderr.log" || true
+    continue
+  fi
+  if ! bounded 30 xcrun simctl io "$udid" screenshot --display=1 "out/launcher-preview/$screen.png"; then
+    echo "::warning::Could not capture the $screen preview"
   fi
 done
 bounded 15 xcrun simctl terminate "$udid" "$bundle" >/dev/null 2>&1 || true
