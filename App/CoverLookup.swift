@@ -106,6 +106,11 @@ struct CoverFinder: View {
     @State private var saving = false
     @State private var previewReady = false
     @State private var message: String?
+    @State private var browser: BrowserDestination?
+    private struct BrowserDestination: Identifiable {
+        let url: URL
+        var id: URL { url }
+    }
 
     var body: some View {
         NavigationStack {
@@ -134,12 +139,19 @@ struct CoverFinder: View {
                         Button("Use This Cover") { install(image.url) }
                             .buttonStyle(.glassProminent)
                             .disabled(saving || !previewReady)
-                        if let url = candidate.page { Link("View on VNDB", destination: url) }
+                        if let url = candidate.page {
+                            Button("View on VNDB") { browser = BrowserDestination(url: url) }
+                        }
                     } else {
                         Text("No unique cover match.")
                     }
                     if let message { Text(message).foregroundStyle(.secondary) }
-                    if let googleImages { Link("Search Google Images", destination: googleImages) }
+                    if let googleImages {
+                        Button("Browse for a Cover", systemImage: "globe") { browser = BrowserDestination(url: googleImages) }
+                            .buttonStyle(.glass)
+                        Text("Private in-app browsing. Open the image you want, then tap Use Image.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(18)
@@ -153,6 +165,12 @@ struct CoverFinder: View {
             }
         }
         .interactiveDismissDisabled(saving)
+        .sheet(item: $browser) { destination in
+            CoverBrowser(url: destination.url) { data in
+                try save(data)
+                dismiss()
+            }
+        }
         .task {
             defer { searching = false }
             do { candidate = try await CoverLookup.match(title: title, developer: developer) }
@@ -179,3 +197,4 @@ struct CoverFinder: View {
         }
     }
 }
+

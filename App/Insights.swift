@@ -87,6 +87,10 @@ final class PlayActivity: NSObject {
 
     func begin(_ game: Novel) {
         self.game = game
+        if UserDefaults.standard.object(forKey: "insightsEnabled") != nil,
+           !UserDefaults.standard.bool(forKey: "insightsEnabled") {
+            return
+        }
         elapsed = 0
         launchedAt = .now
         savedLaunch = false
@@ -108,7 +112,9 @@ final class PlayActivity: NSObject {
     @objc private func tick(_ timer: Timer) { checkpoint() }
 
     private func resume() {
-        guard game != nil, started == nil else { return }
+        guard game != nil, started == nil,
+              UserDefaults.standard.object(forKey: "insightsEnabled") == nil ||
+              UserDefaults.standard.bool(forKey: "insightsEnabled") else { return }
         started = (.now, ProcessInfo.processInfo.systemUptime)
     }
 

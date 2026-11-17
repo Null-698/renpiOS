@@ -6,6 +6,12 @@ import UniformTypeIdentifiers
 @MainActor
 @_cdecl("renios_library")
 func runReniOSLibrary() {
+    UserDefaults.standard.register(defaults: [
+        "appearance": "dark", "accentRed": 0.96, "accentGreen": 0.73, "accentBlue": 0.48,
+        "insightsEnabled": true, "showRecentGame": true, "showThumbnails": true,
+        "libraryList": false, "librarySort": "recent", "controlsLayout": "horizontal",
+        "controlsOpacity": 1.0, "widescreen": false
+    ])
     Session().run()
 }
 
@@ -89,9 +95,9 @@ final class Session {
                                    previewInsights: previewInsights, previewName: previewName,
                                    previewLandscape: previewLandscape)
         let host = UIHostingController(rootView: screen)
-        host.view.backgroundColor = .black
+        host.view.backgroundColor = .systemBackground
         window.rootViewController = host
-        window.overrideUserInterfaceStyle = .dark
+        window.overrideUserInterfaceStyle = AppStyle.theme == .dark ? .dark : AppStyle.theme == .light ? .light : .unspecified
         window.makeKeyAndVisible()
         if previewLandscape, let scene = window.windowScene {
             scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight)) { error in
@@ -248,6 +254,9 @@ final class Session {
         try FileManager.default.createDirectory(at: novel.saves, withIntermediateDirectories: true)
         let startedAt = Date.now
         let overlay = makeGameOverlay()
+        let displayConfiguration = novel.root.appending(path: ".renios-display.json")
+        let fillScreen = UserDefaults.standard.bool(forKey: "widescreen")
+        try JSONEncoder().encode(["fill": fillScreen]).write(to: displayConfiguration, options: .atomic)
         activity.begin(novel)
         defer {
             activity.finish()
@@ -285,7 +294,7 @@ final class Session {
         overlay.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.alert.rawValue - 1)
         let controls = PlaybackControlsController()
         overlay.rootViewController = controls
-        overlay.touchTargets = [controls.handle, controls.bar]
+        overlay.touchTargets = [controls.handle, controls.bar] + controls.independentButtons
         overlay.isHidden = false
         return overlay
     }
@@ -307,6 +316,11 @@ private final class TouchThroughWindow: UIWindow {
 private final class PlaybackControlsController: UIViewController {
     let handle = UIButton(type: .system)
     let bar = UIStackView()
+    private(set) var independentButtons: [UIButton] = []
+    private let controlsMode = UserDefaults.standard.string(forKey: "controlsLayout") ?? "horizontal"
+    private let controlsOpacity = UserDefaults.standard.object(forKey: "controlsOpacity") == nil
+        ? 1.0 : min(max(UserDefaults.standard.double(forKey: "controlsOpacity"), 0.25), 1.0)
+    private var independentPositions: [Int: CGPoint] = [:]
     private var hideTask: Task<Void, Never>?
     private var expanded = false
     private var dragging = false
@@ -327,7 +341,7 @@ private final class PlaybackControlsController: UIViewController {
         handle.addAction(UIAction { [weak self] _ in self?.setExpanded(true) }, for: .touchUpInside)
         view.addSubview(handle)
 
-        bar.axis = .horizontal
+        bar.axis = controlsMode == "vertical" ? .vertical : .horizontal
         bar.spacing = 4
         bar.alignment = .center
         bar.addArrangedSubview(button("Hide Game Controls", "chevron.down") { [weak self] in self?.setExpanded(false) })
@@ -338,6 +352,24 @@ private final class PlaybackControlsController: UIViewController {
         bar.addArrangedSubview(button("Close Game", "power", tint: .systemOrange) { [weak self] in
             self?.confirmExit()
         })
+        if controlsMode == "separate" {
+            independentButtons = bar.arrangedSubviews.compactMap { $0 as? UIButton }
+            for (index, button) in independentButtons.enumerated() {
+                bar.removeArrangedSubview(button)
+                button.removeFromSuperview()
+                button.tag = index
+                let values = UserDefaults.standard.array(forKey: "controlPosition-\(index)") as? [Double]
+                if let values, values.count == 2, values.allSatisfy({ $0.isFinite && (0...1).contains($0) }) {
+                    independentPositions[index] = CGPoint(x: values[0], y: values[1])
+                }
+                view.addSubview(button)
+                button.alpha = 0
+                button.isUserInteractionEnabled = false
+                button.accessibilityElementsHidden = true
+                button.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(dragIndependent(_:))))
+            }
+        }
+        handle.alpha = controlsOpacity
         view.addSubview(bar)
         bar.alpha = 0
         if !UIAccessibility.isReduceMotionEnabled { bar.transform = CGAffineTransform(scaleX: 0.87, y: 0.87) }
@@ -371,23 +403,58 @@ private final class PlaybackControlsController: UIViewController {
 
     private func positionControls() {
         let bounds = available
-        let barWidth = CGFloat(bar.arrangedSubviews.count) * 44 + CGFloat(bar.arrangedSubviews.count - 1) * bar.spacing
+        let count = max(bar.arrangedSubviews.count, 1)
+        let span = CGFloat(count) * 44 + CGFloat(count - 1) * bar.spacing
+        let barWidth: CGFloat = controlsMode == "vertical" ? 44 : span
+        let barHeight: CGFloat = controlsMode == "vertical" ? span : 44
         // Both layouts share a proportional position within their usable ranges.
-        func frame(width: CGFloat) -> CGRect {
+        func frame(width: CGFloat, height: CGFloat) -> CGRect {
             let horizontal = max(0, bounds.width - width)
-            let vertical = max(0, bounds.height - 44)
+            let vertical = max(0, bounds.height - height)
             let x = dragPosition.map { min(max($0.x - bounds.minX - width / 2, 0), horizontal) }
                 ?? horizontal * dock.x
-            let y = dragPosition.map { min(max($0.y - bounds.minY - 22, 0), vertical) }
+            let y = dragPosition.map { min(max($0.y - bounds.minY - height / 2, 0), vertical) }
                 ?? vertical * dock.y
-            return CGRect(x: bounds.minX + x, y: bounds.minY + y, width: width, height: 44)
+            return CGRect(x: bounds.minX + x, y: bounds.minY + y, width: width, height: height)
         }
         handle.bounds.size = CGSize(width: 44, height: 44)
-        bar.bounds.size = CGSize(width: barWidth, height: 44)
-        let handleFrame = frame(width: 44)
-        let barFrame = frame(width: barWidth)
+        bar.bounds.size = CGSize(width: barWidth, height: barHeight)
+        let handleFrame = frame(width: 44, height: 44)
+        let barFrame = frame(width: barWidth, height: barHeight)
         handle.center = .init(x: handleFrame.midX, y: handleFrame.midY)
         bar.center = .init(x: barFrame.midX, y: barFrame.midY)
+        for button in independentButtons {
+            let point = independentPositions[button.tag]
+                ?? CGPoint(x: 1, y: CGFloat(button.tag + 1) / CGFloat(independentButtons.count + 1))
+            button.frame = CGRect(x: bounds.minX + max(bounds.width - 44, 0) * point.x,
+                                  y: bounds.minY + max(bounds.height - 44, 0) * point.y, width: 44, height: 44)
+        }
+    }
+
+    @objc private func dragIndependent(_ recognizer: UIPanGestureRecognizer) {
+        guard let target = recognizer.view else { return }
+        let bounds = available
+        switch recognizer.state {
+        case .began:
+            hideTask?.cancel()
+            dragging = true
+            dragOrigin = target.center
+        case .changed:
+            let translation = recognizer.translation(in: view)
+            let x = min(max(dragOrigin.x + translation.x - 22, bounds.minX), max(bounds.maxX - 44, bounds.minX))
+            let y = min(max(dragOrigin.y + translation.y - 22, bounds.minY), max(bounds.maxY - 44, bounds.minY))
+            let point = CGPoint(x: (x - bounds.minX) / max(bounds.width - 44, 1),
+                                y: (y - bounds.minY) / max(bounds.height - 44, 1))
+            independentPositions[target.tag] = point
+            target.frame.origin = CGPoint(x: x, y: y)
+        case .ended, .cancelled, .failed:
+            if let point = independentPositions[target.tag] {
+                UserDefaults.standard.set([Double(point.x), Double(point.y)], forKey: "controlPosition-\(target.tag)")
+            }
+            dragging = false
+            scheduleCollapse()
+        default: break
+        }
     }
 
     @objc private func drag(_ recognizer: UIPanGestureRecognizer) {
@@ -443,13 +510,21 @@ private final class PlaybackControlsController: UIViewController {
         expanded = showing
         handle.isUserInteractionEnabled = !showing
         handle.accessibilityElementsHidden = showing
-        bar.isUserInteractionEnabled = showing
-        bar.accessibilityElementsHidden = !showing
+        bar.isUserInteractionEnabled = showing && controlsMode != "separate"
+        bar.accessibilityElementsHidden = !showing || controlsMode == "separate"
+        for button in independentButtons {
+            button.isUserInteractionEnabled = showing
+            button.accessibilityElementsHidden = !showing
+        }
         let reduced = UIAccessibility.isReduceMotionEnabled
         UIView.animate(withDuration: reduced ? 0.12 : 0.28, delay: 0,
                        options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseInOut]) {
-            self.handle.alpha = showing ? 0 : 1
-            self.bar.alpha = showing ? 1 : 0
+            self.handle.alpha = showing ? 0 : self.controlsOpacity
+            self.bar.alpha = showing && self.controlsMode != "separate" ? self.controlsOpacity : 0
+            for button in self.independentButtons {
+                button.alpha = showing ? self.controlsOpacity : 0
+                button.transform = showing || reduced ? .identity : CGAffineTransform(scaleX: 0.87, y: 0.87)
+            }
             self.handle.transform = showing && !reduced ? CGAffineTransform(scaleX: 0.78, y: 0.78) : .identity
             self.bar.transform = showing || reduced ? .identity : CGAffineTransform(scaleX: 0.87, y: 0.87)
         }
@@ -467,14 +542,19 @@ private final class PlaybackControlsController: UIViewController {
     }
 }
 
-let ink = Color(red: 0.045, green: 0.053, blue: 0.075)
-let cream = Color(red: 0.96, green: 0.94, blue: 0.89)
-let amber = Color(red: 0.96, green: 0.73, blue: 0.48)
-let panel = Color(red: 0.085, green: 0.095, blue: 0.13)
+@MainActor var ink: Color {
+    Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(red: 0.045, green: 0.053, blue: 0.075, alpha: 1)
+            : UIColor(red: 0.96, green: 0.96, blue: 0.975, alpha: 1)
+    })
+}
+@MainActor var cream: Color { Color.primary }
+@MainActor var amber: Color { AppStyle.accent }
+@MainActor var panel: Color { Color(uiColor: .secondarySystemGroupedBackground) }
 
 private struct LibraryScreen: View {
     private enum LibraryTab: Hashable {
-        case library, insights, search
+        case library, insights, settings, search
     }
 
     @Environment(\.dynamicTypeSize) private var dynamicType
@@ -482,6 +562,14 @@ private struct LibraryScreen: View {
     let previewInsights: PlayHistory?
     let previewName: String?
     let previewLandscape: Bool
+    @AppStorage("appearance") private var appearance = "dark"
+    @AppStorage("accentRed") private var accentRed = 0.96
+    @AppStorage("accentGreen") private var accentGreen = 0.73
+    @AppStorage("accentBlue") private var accentBlue = 0.48
+    @AppStorage("showRecentGame") private var showRecent = true
+    @AppStorage("showThumbnails") private var showThumbnails = true
+    @AppStorage("libraryList") private var libraryList = false
+    @AppStorage("librarySort") private var sortKey = LibrarySort.recent.rawValue
     @State private var importing = false
     @State private var filter = ""
     @State private var searchPresented = false
@@ -510,21 +598,25 @@ private struct LibraryScreen: View {
             _openedID = State(initialValue: id)
             _highlightedID = State(initialValue: id)
         }
-        _libraryTab = State(initialValue: previewInsights == nil ? .library : .insights)
+        _libraryTab = State(initialValue: previewName == "Settings" ? .settings : previewInsights == nil ? .library : .insights)
         _selected = State(initialValue: previewTab != nil || previewName == "landscape-options" ? session.novels.first : nil)
         _wideLayout = State(initialValue: previewLandscape)
         _selectedTab = State(initialValue: previewTab ?? .overview)
     }
 
+    private var sortedNovels: [Novel] {
+        (LibrarySort(rawValue: sortKey) ?? .recent).sorted(session.novels, history: session.activity.history)
+    }
+
     private var visibleNovels: [Novel] {
         let query = filter.trimmingCharacters(in: .whitespacesAndNewlines)
-        return query.isEmpty ? session.novels : session.novels.filter { $0.title.localizedCaseInsensitiveContains(query) }
+        return query.isEmpty ? sortedNovels : sortedNovels.filter { $0.title.localizedCaseInsensitiveContains(query) }
     }
 
     var body: some View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 500 && geometry.size.width > geometry.size.height && !dynamicType.isAccessibilitySize
-            let games = session.novels
+            let games = sortedNovels
 
             let feature = games.first(where: { $0.id == highlightedID }) ?? games.first
             let inlineGame = wide ? selected : nil
@@ -599,8 +691,9 @@ private struct LibraryScreen: View {
             }
         }
         .background(ink.ignoresSafeArea())
-        .preferredColorScheme(.dark)
-        .tint(amber)
+        .preferredColorScheme(AppStyle.theme)
+        .tint(Color(red: accentRed, green: accentGreen, blue: accentBlue))
+        .onChange(of: appearance) { _, _ in AppStyle.applyToWindows() }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.zip, .folder, UTType(filenameExtension: "apk") ?? .data]) {
             switch $0 {
             case .success(let url): session.add(url)
@@ -668,6 +761,10 @@ private struct LibraryScreen: View {
                 .frame(maxHeight: .infinity, alignment: .top)
             }
 
+            Tab("Settings", systemImage: "gearshape", value: .settings) {
+                AppSettingsView(session: session)
+            }
+
             Tab(value: .search, role: .search) {
                 NavigationStack {
                     Group {
@@ -697,7 +794,11 @@ private struct LibraryScreen: View {
                 }
             }
         }
-        .searchable(text: $filter, isPresented: $searchPresented, prompt: "Search games")
+        .searchable(text: $filter, isPresented: $searchPresented,
+                    placement: .navigationBarDrawer(displayMode: .always), prompt: "Search games")
+        .onChange(of: libraryTab) { _, tab in
+            searchPresented = tab == .search
+        }
     }
 
     private func header(_ title: String, showsImport: Bool = false) -> some View {
@@ -725,7 +826,19 @@ private struct LibraryScreen: View {
                     .controlSize(.small)
                     .accessibilityLabel("Importing")
             }
-            if showsImport { importButton }
+            if showsImport {
+                Menu {
+                    Picker("Sort By", selection: $sortKey) {
+                        ForEach(LibrarySort.allCases) { Text($0.label).tag($0.rawValue) }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Sort Library")
+                importButton
+            }
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 9)
@@ -851,7 +964,7 @@ private struct LibraryScreen: View {
 
         return ZStack(alignment: .trailing) {
             if open {
-                CoverArt(url: game.cover, tint: carouselTint(game))
+                CoverArt(url: showThumbnails ? game.cover : nil, tint: carouselTint(game))
                     .scaleEffect(1.15)
                     .blur(radius: 32)
                     .overlay {
@@ -885,7 +998,7 @@ private struct LibraryScreen: View {
     }
 
     private func carouselFace(_ game: Novel, selected: Bool, height: CGFloat) -> some View {
-        CoverArt(url: game.cover, tint: carouselTint(game))
+        CoverArt(url: showThumbnails ? game.cover : nil, tint: carouselTint(game))
             .overlay {
                 LinearGradient(colors: [.clear, .black.opacity(0.84)], startPoint: .center, endPoint: .bottom)
             }
@@ -1013,7 +1126,7 @@ private struct LibraryScreen: View {
         }
         return ScrollView {
             VStack(alignment: .leading, spacing: 21) {
-                if let feature = lastPlayed ?? games.first {
+                if showRecent, let feature = lastPlayed ?? games.first {
                     VStack(alignment: .leading, spacing: 8) {
                         if lastPlayed != nil {
                             Text("Last Played").font(.headline).accessibilityAddTraits(.isHeader)
@@ -1026,24 +1139,33 @@ private struct LibraryScreen: View {
                     Spacer()
                     Text(games.count.formatted()).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 12)], spacing: 16) {
-                    ForEach(games) { game in
-                        Button { showOptions(game) } label: {
-                            VStack(alignment: .leading, spacing: 8) {
-                                CoverArt(url: game.cover, tint: amber)
-                                    .aspectRatio(1.52, contentMode: .fit)
-                                    .overlay(alignment: .bottomLeading) {
-                                        gameVersions(game)
-                                            .padding(7)
-                                    }
-                                    .clipShape(.rect(cornerRadius: 12))
-                                Text(game.title)
-                                    .font(.subheadline.weight(.semibold))
-                                    .lineLimit(2, reservesSpace: true)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                if libraryList {
+                    LazyVStack(spacing: 6) {
+                        ForEach(games) { game in
+                            Button { showOptions(game) } label: { gameRow(game, highlighted: false) }
+                                .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
+                    }
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 12)], spacing: 16) {
+                        ForEach(games) { game in
+                            Button { showOptions(game) } label: {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    CoverArt(url: showThumbnails ? game.cover : nil, tint: amber)
+                                        .aspectRatio(1.52, contentMode: .fit)
+                                        .overlay(alignment: .bottomLeading) {
+                                            gameVersions(game)
+                                                .padding(7)
+                                        }
+                                        .clipShape(.rect(cornerRadius: 12))
+                                    Text(game.title)
+                                        .font(.subheadline.weight(.semibold))
+                                        .lineLimit(2, reservesSpace: true)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
             }
@@ -1057,9 +1179,11 @@ private struct LibraryScreen: View {
 
     private func gameRow(_ game: Novel, highlighted: Bool) -> some View {
         HStack(spacing: 9) {
-            CoverArt(url: game.cover, tint: amber)
-                .frame(width: 52, height: 37)
-                .clipShape(.rect(cornerRadius: 6))
+            if showThumbnails {
+                CoverArt(url: game.cover, tint: amber)
+                    .frame(width: 52, height: 37)
+                    .clipShape(.rect(cornerRadius: 6))
+            }
             Text(game.title)
                 .font(.subheadline.weight(highlighted ? .semibold : .medium))
                 .lineLimit(2)
@@ -1082,7 +1206,7 @@ private struct LibraryScreen: View {
 
     private func featureCard(_ game: Novel, compact: Bool) -> some View {
         ZStack(alignment: .bottomLeading) {
-            CoverArt(url: game.cover, tint: amber)
+            CoverArt(url: showThumbnails ? game.cover : nil, tint: amber)
             LinearGradient(stops: [.init(color: .clear, location: 0.15),
                                    .init(color: ink.opacity(0.52), location: 0.49),
                                    .init(color: ink.opacity(0.98), location: 1)],
@@ -1390,7 +1514,7 @@ private struct NovelSheet: View {
             if namespace == nil { ink.ignoresSafeArea() }
         }
         .tint(amber)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(AppStyle.theme)
         .interactiveDismissDisabled(session.isImporting)
         .fileImporter(isPresented: $choosingCover, allowedContentTypes: [.image]) { result in
             do {
@@ -1411,7 +1535,7 @@ private struct NovelSheet: View {
             EnginePicker(selection: engine, automaticVersion: Session.automaticEngine(for: novel))
                 .presentationDragIndicator(.visible)
                 .presentationDetents([.large])
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(AppStyle.theme)
                 .tint(amber)
         }
         .confirmationDialog("Remove \(novel.title)?", isPresented: $confirmingRemoval, titleVisibility: .visible) {

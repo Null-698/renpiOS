@@ -90,6 +90,19 @@ def consume_confirmed_exit():
     return True
 
 
+def configure_display(renpy):
+    """Apply the optional player display preference before renderer setup."""
+    import json
+    path = os.path.join(sys.argv[1], ".renios-display.json")
+    try:
+        with open(path, "rb") as source:
+            settings = json.load(source)
+        if settings.get("fill", False):
+            renpy.config.adjust_view_size = lambda width, height: (width, height)
+    except (OSError, ValueError, TypeError):
+        pass
+
+
 def record_metadata(renpy):
     """Read the values evaluated by Ren'Py, including projects stored in RPA archives."""
     import json
@@ -117,6 +130,7 @@ def record_metadata(renpy):
             return value
         return None
 
+    configure_display(renpy)
     try:
         build = getattr(renpy.store, "build", None)
         active_mods = False
