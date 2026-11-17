@@ -473,6 +473,10 @@ let amber = Color(red: 0.96, green: 0.73, blue: 0.48)
 let panel = Color(red: 0.085, green: 0.095, blue: 0.13)
 
 private struct LibraryScreen: View {
+    private enum LibraryTab: Hashable {
+        case library, insights, search
+    }
+
     @Environment(\.dynamicTypeSize) private var dynamicType
     var session: Session
     let previewInsights: PlayHistory?
@@ -480,18 +484,18 @@ private struct LibraryScreen: View {
     let previewLandscape: Bool
     @State private var importing = false
     @State private var filter = ""
-    @State private var searchExpanded = false
+    @State private var searchPresented = false
     @State private var selected: Novel?
     @State private var selectedTab: GameTab = .overview
     @State private var showingImportReview = false
     @State private var gameToLaunch: Novel?
     @State private var highlightedID: Novel.ID?
     @State private var openedID: Novel.ID?
-    @State private var showingInsights = false
+    @State private var libraryTab: LibraryTab = .library
+    @GestureState private var carouselDrag: CGFloat = 0
     @State private var coverAccent: Color?
     @State private var wideLayout = false
     @Namespace private var optionsMotion
-    @FocusState private var searching: Bool
     @FocusState private var focusedGame: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -506,7 +510,7 @@ private struct LibraryScreen: View {
             _openedID = State(initialValue: id)
             _highlightedID = State(initialValue: id)
         }
-        _showingInsights = State(initialValue: previewInsights != nil)
+        _libraryTab = State(initialValue: previewInsights == nil ? .library : .insights)
         _selected = State(initialValue: previewTab != nil || previewName == "landscape-options" ? session.novels.first : nil)
         _wideLayout = State(initialValue: previewLandscape)
         _selectedTab = State(initialValue: previewTab ?? .overview)
@@ -520,7 +524,7 @@ private struct LibraryScreen: View {
     var body: some View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 500 && geometry.size.width > geometry.size.height && !dynamicType.isAccessibilitySize
-            let games = visibleNovels
+            let games = session.novels
 
             let feature = games.first(where: { $0.id == highlightedID }) ?? games.first
             let inlineGame = wide ? selected : nil
@@ -548,6 +552,14 @@ private struct LibraryScreen: View {
                 guard let previewName, wide == previewLandscape else { return }
                 try? await Task.sleep(for: .milliseconds(850))
                 guard !Task.isCancelled else { return }
+                if previewName == "Search" {
+                    libraryTab = .search
+                    try? await Task.sleep(for: .milliseconds(350))
+                    guard !Task.isCancelled else { return }
+                    searchPresented = true
+                    try? await Task.sleep(for: .milliseconds(600))
+                    guard !Task.isCancelled else { return }
+                }
                 if previewName.hasPrefix("landscape-return") {
                     let index = previewName.hasSuffix("second") ? 1 : 2
                     guard session.novels.indices.contains(index) else { return }
@@ -578,7 +590,7 @@ private struct LibraryScreen: View {
                 }
             }
             .background {
-                if wide && !showingInsights && !searchExpanded, let coverAccent {
+                if wide && libraryTab == .library, let coverAccent {
                     RadialGradient(colors: [coverAccent.opacity(0.22), .clear], center: .center,
                                    startRadius: 0, endRadius: geometry.size.width * 0.75)
                         .ignoresSafeArea()
@@ -629,37 +641,66 @@ private struct LibraryScreen: View {
     }
 
     private func launcher(wide: Bool, games: [Novel], feature: Novel?) -> some View {
-        VStack(spacing: 0) {
-            header(wide: wide)
-                .padding(.horizontal, 20)
-                .padding(.bottom, wide ? 9 : 13)
-            if showingInsights {
-                InsightsView(history: previewInsights ?? session.activity.history,
-                             titles: Dictionary(uniqueKeysWithValues: session.novels.map { ($0.id, $0.title) }),
-                             wide: wide)
-                    .transition(.opacity)
-            } else if let feature {
-                if wide && searchExpanded {
-                    landscapeSearchResults(games)
-                } else if wide {
-                    landscape(feature: feature, games: games)
-                } else {
-                    portrait(games: games)
+        TabView(selection: $libraryTab) {
+            Tab("Library", systemImage: "books.vertical", value: .library) {
+                VStack(spacing: 0) {
+                    header("Library", showsImport: true)
+                    if let feature {
+                        if wide {
+                            landscape(feature: feature, games: games)
+                        } else {
+                            portrait(games: games)
+                        }
+                    } else {
+                        emptyLibrary
+                    }
                 }
-            } else if session.novels.isEmpty {
-                emptyLibrary
-            } else {
-                ContentUnavailableView.search(text: filter)
+                .frame(maxHeight: .infinity, alignment: .top)
+            }
+
+            Tab("Insights", systemImage: "chart.bar.xaxis", value: .insights) {
+                VStack(spacing: 0) {
+                    header("Insights")
+                    InsightsView(history: previewInsights ?? session.activity.history,
+                                 titles: Dictionary(uniqueKeysWithValues: games.map { ($0.id, $0.title) }),
+                                 wide: wide)
+                }
+                .frame(maxHeight: .infinity, alignment: .top)
+            }
+
+            Tab(value: .search, role: .search) {
+                NavigationStack {
+                    Group {
+                        if visibleNovels.isEmpty {
+                            if filter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                ContentUnavailableView("No games in your library", systemImage: "books.vertical")
+                            } else {
+                                ContentUnavailableView.search(text: filter)
+                            }
+                        } else {
+                            searchResults(visibleNovels)
+                        }
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(ink)
+                    .navigationTitle("Search Games")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Import Game", systemImage: "plus") {
+                                searchPresented = false
+                                importing = true
+                            }
+                            .disabled(session.isImporting)
+                        }
+                    }
+                }
             }
         }
-        .frame(maxHeight: .infinity, alignment: .top)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            bottomDock(wide: wide)
-        }
+        .searchable(text: $filter, isPresented: $searchPresented, prompt: "Search games")
     }
 
-    private func header(wide: Bool) -> some View {
+    private func header(_ title: String, showsImport: Bool = false) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "book.closed.fill")
                 .font(.system(size: 12, weight: .semibold))
@@ -674,7 +715,7 @@ private struct LibraryScreen: View {
                 .fill(.white.opacity(0.15))
                 .frame(width: 1, height: 15)
                 .accessibilityHidden(true)
-            Text(showingInsights ? "Insights" : "Library")
+            Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .accessibilityAddTraits(.isHeader)
@@ -684,93 +725,15 @@ private struct LibraryScreen: View {
                     .controlSize(.small)
                     .accessibilityLabel("Importing")
             }
-            if !showingInsights && !wide { importButton }
+            if showsImport { importButton }
         }
-    }
-
-    private func bottomDock(wide: Bool) -> some View {
-        VStack(spacing: 8) {
-            if searchExpanded {
-                searchDock(wide: wide)
-                    .transition(.opacity)
-                    .task {
-                        await Task.yield()
-                        if !Task.isCancelled { searching = true }
-                    }
-            }
-            GlassEffectContainer(spacing: 10) {
-                HStack(spacing: 10) {
-                    libraryTabs
-                    searchButton
-                    if wide && !showingInsights && !searchExpanded { importButton }
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity)
-    }
-
-    private var searchButton: some View {
-        Button {
-            if searchExpanded {
-                closeSearch()
-            } else {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
-                    showingInsights = false
-                    searchExpanded = true
-                }
-            }
-        } label: {
-            Image(systemName: searchExpanded ? "xmark" : "magnifyingglass")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(searchExpanded ? amber : cream)
-                .frame(width: 48, height: 48)
-                .glassEffect(.regular.interactive(), in: .circle)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(searchExpanded ? "Close Search" : "Search Games")
-    }
-
-    private func closeSearch() {
-        searching = false
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
-            searchExpanded = false
-            filter = ""
-        }
-    }
-
-    private var libraryTabs: some View {
-        HStack(spacing: 5) {
-            libraryTab("Library", icon: "books.vertical", insights: false)
-            libraryTab("Insights", icon: "chart.bar.xaxis", insights: true)
-        }
-        .padding(4)
-        .glassEffect(.regular, in: .capsule)
-    }
-
-    private func libraryTab(_ title: String, icon: String, insights: Bool) -> some View {
-        let active = showingInsights == insights
-        return Button {
-            closeSearch()
-            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { showingInsights = insights }
-        } label: {
-            VStack(spacing: 2) {
-                Image(systemName: icon).font(.system(size: 15, weight: .semibold))
-                Text(title).font(.caption2.weight(.semibold))
-            }
-            .foregroundStyle(active ? amber : .secondary)
-            .frame(minWidth: 68, minHeight: 40)
-            .background(active ? amber.opacity(0.16) : .clear, in: .capsule)
-            .contentShape(.capsule)
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(active ? .isSelected : [])
+        .padding(.horizontal, 20)
+        .padding(.bottom, 9)
     }
 
     private var importButton: some View {
         Button {
-            searching = false
+            searchPresented = false
             importing = true
         } label: {
             Image(systemName: "plus")
@@ -785,78 +748,83 @@ private struct LibraryScreen: View {
         .disabled(session.isImporting)
     }
 
-    private func searchDock(wide: Bool) -> some View {
-        GlassEffectContainer(spacing: 10) {
-            HStack(spacing: 10) {
-                HStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(amber)
-                        .accessibilityHidden(true)
-                    TextField("Search games", text: $filter)
-                        .textFieldStyle(.plain)
-                        .submitLabel(.search)
-                        .focused($searching)
-                        .onSubmit { searching = false }
-                        .accessibilityIdentifier("searchStories")
-                    if !filter.isEmpty {
-                        Button("Clear Search", systemImage: "xmark.circle.fill") { filter = "" }
-                            .labelStyle(.iconOnly)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 34, height: 44)
-                    }
-                }
-                .padding(.horizontal, 15)
-                .frame(minHeight: 48)
-                .glassEffect(.regular, in: .capsule)
-                if wide { importButton }
-            }
-            .frame(maxWidth: wide ? 510 : 450)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
     private func landscape(feature: Novel, games: [Novel]) -> some View {
         GeometryReader { geometry in
             let width = geometry.size.width
             let cardWidth = min(640, width * 0.66)
             let cardHeight = max(106, geometry.size.height - 18)
+            let stride = cardWidth + 16
+            let center = games.firstIndex(where: { $0.id == feature.id }) ?? 0
+            let visible = max(0, center - 2)...min(games.count - 1, center + 2)
 
-            ScrollView(.horizontal) {
-                LazyHStack(spacing: 16) {
-                    ForEach(games) { game in
-                        carouselCard(game, selected: feature.id == game.id, width: cardWidth, height: cardHeight)
-                            .scrollTransition(.interactive, axis: .horizontal) { content, phase in
-                                content
-                                    .scaleEffect(reduceMotion || phase.isIdentity ? 1 : 0.89)
-                                    .opacity(reduceMotion || phase.isIdentity ? 1 : 0.58)
-                            }
-                            .id(game.id)
+            ZStack {
+                ForEach(visible.map { games[$0] }) { game in
+                    if let index = games.firstIndex(where: { $0.id == game.id }) {
+                        let distance = CGFloat(index - center) + carouselDrag / stride
+                        let emphasis = min(abs(distance), 1)
+                        carouselCard(game, selected: index == center, width: cardWidth, height: cardHeight)
+                            .scaleEffect(reduceMotion ? 1 : 1 - 0.11 * emphasis)
+                            .opacity(reduceMotion ? 1 : 1 - 0.42 * emphasis)
+                            .offset(x: distance * stride)
+                            .allowsHitTesting(abs(distance) * stride < (width + cardWidth) / 2)
+                            .accessibilityHidden(abs(index - center) > 1)
                     }
                 }
-                .scrollTargetLayout()
             }
-            .contentMargins(.horizontal, (width - cardWidth) / 2, for: .scrollContent)
-            .scrollPosition(id: $highlightedID, anchor: .center)
-            .scrollTargetBehavior(.viewAligned(limitBehavior: .alwaysByOne, anchor: .center))
-            .scrollBounceBehavior(.basedOnSize)
-            .scrollIndicators(.hidden)
+            .frame(maxWidth: .infinity)
             .frame(height: cardHeight + 8)
+            .contentShape(.rect)
+            .clipped()
+            .animation(carouselMotion, value: carouselDrag == 0)
+            .highPriorityGesture(
+                carouselSwipe(games: games, center: center, stride: stride),
+                including: games.count > 1 ? .all : .subviews
+            )
+            .accessibilityScrollAction { edge in
+                switch edge {
+                case .leading: moveCarousel(in: games, from: center, direction: -1)
+                case .trailing: moveCarousel(in: games, from: center, direction: 1)
+                default: break
+                }
+            }
             .onChange(of: games.map(\.id), initial: true) {
                 if !games.contains(where: { $0.id == highlightedID }) {
                     highlightedID = games.first?.id
-                }
-            }
-            .onScrollPhaseChange { _, phase in
-                // A programmatic snap can report another card while it is moving.
-                // Only direct scrolling dismisses an opened hinge.
-                if phase == .interacting && openedID != nil {
-                    withAnimation(carouselMotion) { openedID = nil }
                 }
             }
             .onChange(of: focusedGame) { _, id in
                 if let id { centerGame(id) }
             }
         }
+    }
+
+    private func carouselSwipe(games: [Novel], center: Int, stride: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 14)
+            .updating($carouselDrag) { value, offset, transaction in
+                transaction.animation = nil
+                let distance = value.translation.width
+                guard abs(distance) > abs(value.translation.height) else { return }
+                let atEdge = (center == 0 && distance > 0) || (center == games.count - 1 && distance < 0)
+                offset = min(max(distance, -stride), stride) * (atEdge ? 0.23 : 1)
+            }
+            .onChanged { value in
+                guard abs(value.translation.width) > abs(value.translation.height), openedID != nil else { return }
+                withAnimation(carouselMotion) { openedID = nil }
+            }
+            .onEnded { value in
+                let distance = value.translation.width
+                guard abs(distance) > abs(value.translation.height) else { return }
+                let projected = value.predictedEndTranslation.width
+                let direction = abs(distance) > stride * 0.22 ? distance : projected
+                if abs(direction) > stride * 0.22 {
+                    moveCarousel(in: games, from: center, direction: direction < 0 ? 1 : -1)
+                }
+            }
+    }
+
+    private func moveCarousel(in games: [Novel], from index: Int, direction: Int) {
+        let target = min(max(index + direction, 0), games.count - 1)
+        centerGame(games[target].id)
     }
 
     private var carouselMotion: Animation? {
@@ -1026,7 +994,7 @@ private struct LibraryScreen: View {
         .background(.ultraThinMaterial, in: .capsule)
     }
 
-    private func landscapeSearchResults(_ games: [Novel]) -> some View {
+    private func searchResults(_ games: [Novel]) -> some View {
         ScrollView {
             LazyVStack(spacing: 3) {
                 ForEach(games) { game in
@@ -1040,13 +1008,12 @@ private struct LibraryScreen: View {
     }
 
     private func portrait(games: [Novel]) -> some View {
-        let lastPlayed = session.novels.filter { $0.lastPlayed != nil }.max {
+        let lastPlayed = games.filter { $0.lastPlayed != nil }.max {
             ($0.lastPlayed ?? .distantPast) < ($1.lastPlayed ?? .distantPast)
         }
         return ScrollView {
             VStack(alignment: .leading, spacing: 21) {
-                if filter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                   let feature = lastPlayed ?? games.first {
+                if let feature = lastPlayed ?? games.first {
                     VStack(alignment: .leading, spacing: 8) {
                         if lastPlayed != nil {
                             Text("Last Played").font(.headline).accessibilityAddTraits(.isHeader)
@@ -1131,7 +1098,6 @@ private struct LibraryScreen: View {
                 GlassEffectContainer(spacing: 10) {
                     HStack(spacing: 10) {
                         libraryAction("Play", icon: "play.fill", prominent: true) {
-                            searching = false
                             session.launch(game)
                         }
                         .disabled(session.isImporting || Session.engine(for: game) == nil)
@@ -1169,7 +1135,7 @@ private struct LibraryScreen: View {
 
     @ViewBuilder private var emptyActions: some View {
         Button("Import Game", systemImage: "plus") {
-            searching = false
+            searchPresented = false
             importing = true
         }
         .buttonStyle(.glassProminent)
@@ -1177,10 +1143,13 @@ private struct LibraryScreen: View {
     }
 
     private func showOptions(_ game: Novel, tab: GameTab = .overview) {
-        closeSearch()
+        searchPresented = false
         selectedTab = tab
         withAnimation(wideLayout ? carouselMotion : nil) {
-            if wideLayout { highlightedID = game.id }
+            if wideLayout {
+                libraryTab = .library
+                highlightedID = game.id
+            }
             selected = game
         }
     }
