@@ -12,6 +12,7 @@ struct Novel: Codable, Identifiable, Equatable, Sendable {
     var versionScanned: Bool?
     var engineOverride: String?
     var orientation: GameOrientation?
+    var fillScreen: Bool?
     var gameFolder: String?
     var saveFolder: String?
     var saveIdentity: String?
@@ -1143,3 +1144,4 @@ enum LibraryStore {
         return false
     }
 }
+

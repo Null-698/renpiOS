@@ -128,7 +128,7 @@ private struct SaveSlotRow<Actions: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(panel)
         .clipShape(.rect(cornerRadius: 13))
-        .overlay { RoundedRectangle(cornerRadius: 13).strokeBorder(.white.opacity(0.08)).allowsHitTesting(false) }
+        .overlay { RoundedRectangle(cornerRadius: 13).strokeBorder(.primary.opacity(0.08)).allowsHitTesting(false) }
         .task(id: slot.date) {
             let current = slot
             let data = await Task.detached(priority: .utility) {
@@ -247,79 +247,50 @@ struct ModManager: View {
     }
 }
 
-struct SaveExportTab: View {
-    let novel: Novel
-    @Binding var working: Bool
-    @State private var archives: [LibraryStore.SaveArchive] = []
-    @State private var message: String?
-
-    var body: some View {
-        ManagementCollection(isEmpty: archives.isEmpty, emptyTitle: "No backups yet", emptyIcon: "archivebox",
-                             actionTitle: "Create Backup", actionIcon: "archivebox.fill", working: working,
-                             message: message, action: export) {
-            ForEach(archives) { archive in
-                ShareLink(item: archive.url) {
-                    archiveRow("Save Backup", icon: "archivebox", archive: archive, action: "square.and.arrow.up")
-                }
-                .buttonStyle(.plain)
-                .managementRow()
-                .disabled(working)
-                .swipeActions(allowsFullSwipe: false) {
-                    Button("Delete Backup", systemImage: "trash", role: .destructive) {
-                        delete(archive)
-                    }
-                    .disabled(working)
-                }
-            }
-        }
-        .onAppear { refresh() }
-    }
-
-    private func refresh() { archives = LibraryStore.saveArchives(for: novel, kind: .exported) }
-
-    private func delete(_ archive: LibraryStore.SaveArchive) {
-        do { try LibraryStore.removeArchive(archive, from: novel, kind: .exported); refresh() }
-        catch { message = error.localizedDescription }
-    }
-
-    private func export() {
-        working = true
-        message = nil
-        let game = novel
-        Task {
-            defer { working = false; refresh() }
-            do {
-                try await Task.detached(priority: .userInitiated) { try LibraryStore.backup(game) }.value
-            } catch { message = error.localizedDescription }
-        }
-    }
-}
-
-struct SaveRestoreTab: View {
+struct BackupManager: View {
     let novel: Novel
     let session: Session
-    @State private var archives: [LibraryStore.SaveArchive] = []
+    @State private var entries: [Entry] = []
     @State private var choosing = false
-    @State private var pending: LibraryStore.SaveArchive?
+    @State private var actions = false
+    @State private var restoring: LibraryStore.SaveArchive?
     @State private var message: String?
 
+    private struct Entry: Identifiable {
+        let archive: LibraryStore.SaveArchive
+        let imported: Bool
+        var id: URL { archive.id }
+        var kind: LibraryStore.SaveArchiveKind { imported ? .restore : .exported }
+    }
+
     var body: some View {
-        ManagementCollection(isEmpty: archives.isEmpty, emptyTitle: "No backups to restore", emptyIcon: "arrow.down.to.line",
-                             actionTitle: "Add Backup ZIP", actionIcon: "folder.badge.plus", working: session.isImporting,
-                             message: message, action: { choosing = true }) {
-            ForEach(archives) { archive in
-                Button {
-                    pending = archive
-                } label: {
-                    archiveRow(archive.url.lastPathComponent, icon: "doc.zipper", archive: archive, action: "arrow.down.to.line")
+        ManagementCollection(isEmpty: entries.isEmpty, emptyTitle: "No backups yet", emptyIcon: "archivebox",
+                             actionTitle: "Backup Actions", actionIcon: "plus", working: session.isImporting,
+                             message: message, action: { actions = true }) {
+            ForEach(entries) { entry in
+                HStack(spacing: 10) {
+                    Button {
+                        restoring = entry.archive
+                    } label: {
+                        archiveRow(entry.imported ? entry.archive.url.lastPathComponent : "Save Backup",
+                                   icon: entry.imported ? "doc.zipper" : "archivebox",
+                                   archive: entry.archive, action: "arrow.down.to.line")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Restore saves from this backup")
+                    ShareLink(item: entry.archive.url) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 18, weight: .medium))
+                            .frame(width: 40, height: 44)
+                    }
+                    .accessibilityLabel("Share Backup")
                 }
-                .buttonStyle(.plain)
                 .managementRow()
                 .disabled(session.isImporting)
                 .swipeActions(allowsFullSwipe: false) {
-                    Button("Remove ZIP", systemImage: "trash", role: .destructive) {
+                    Button("Delete Backup", systemImage: "trash", role: .destructive) {
                         do {
-                            try LibraryStore.removeArchive(archive, from: novel, kind: .restore)
+                            try LibraryStore.removeArchive(entry.archive, from: novel, kind: entry.kind)
                             refresh()
                         } catch { message = error.localizedDescription }
                     }
@@ -328,6 +299,10 @@ struct SaveRestoreTab: View {
             }
         }
         .onAppear { refresh() }
+        .confirmationDialog("Backups", isPresented: $actions, titleVisibility: .visible) {
+            Button("Create Backup") { create() }
+            Button("Import Backup ZIP") { choosing = true }
+        }
         .fileImporter(isPresented: $choosing, allowedContentTypes: [.zip], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let files): keep(files)
@@ -335,19 +310,36 @@ struct SaveRestoreTab: View {
             }
         }
         .confirmationDialog("Restore saves?", isPresented: Binding(
-            get: { pending != nil }, set: { if !$0 { pending = nil } }
-        ), titleVisibility: .visible, presenting: pending) { archive in
+            get: { restoring != nil }, set: { if !$0 { restoring = nil } }
+        ), titleVisibility: .visible, presenting: restoring) { archive in
             Button("Keep Existing Saves") { restore(archive, replacing: false) }
             Button("Replace Matching Saves", role: .destructive) { restore(archive, replacing: true) }
         } message: { archive in
-            Text(archive.url.lastPathComponent)
+            Text(archive.date.formatted(date: .abbreviated, time: .shortened))
         }
     }
 
-    private func refresh() { archives = LibraryStore.saveArchives(for: novel, kind: .restore) }
+    private func refresh() {
+        entries = LibraryStore.saveArchives(for: novel, kind: .exported).map { Entry(archive: $0, imported: false) }
+            + LibraryStore.saveArchives(for: novel, kind: .restore).map { Entry(archive: $0, imported: true) }
+        entries.sort { ($0.archive.date, $0.id.path) > ($1.archive.date, $1.id.path) }
+    }
+
+    private func create() {
+        session.isImporting = true
+        message = nil
+        let game = novel
+        Task {
+            defer { session.isImporting = false; refresh() }
+            do {
+                try await Task.detached(priority: .userInitiated) { try LibraryStore.backup(game) }.value
+            } catch { message = error.localizedDescription }
+        }
+    }
 
     private func keep(_ files: [URL]) {
         session.isImporting = true
+        message = nil
         let game = novel
         Task {
             defer { session.isImporting = false; refresh() }
@@ -360,7 +352,7 @@ struct SaveRestoreTab: View {
     }
 
     private func restore(_ archive: LibraryStore.SaveArchive, replacing: Bool) {
-        pending = nil
+        restoring = nil
         message = nil
         Task {
             do {
@@ -438,8 +430,8 @@ private extension View {
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .frame(minHeight: 62)
-            .background(.white.opacity(0.045), in: .rect(cornerRadius: 17))
-            .overlay { RoundedRectangle(cornerRadius: 17).strokeBorder(.white.opacity(0.09)).allowsHitTesting(false) }
+            .background(.primary.opacity(0.045), in: .rect(cornerRadius: 17))
+            .overlay { RoundedRectangle(cornerRadius: 17).strokeBorder(.primary.opacity(0.09)).allowsHitTesting(false) }
             .contentShape(.rect(cornerRadius: 17))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
@@ -504,7 +496,7 @@ private struct ManagementPanel<Content: View>: View {
                 LinearGradient(colors: [amber.opacity(0.095), .clear], startPoint: .topTrailing, endPoint: .bottomLeading)
             )
         }
-        .overlay { RoundedRectangle(cornerRadius: 17).strokeBorder(.white.opacity(0.09)).allowsHitTesting(false) }
+        .overlay { RoundedRectangle(cornerRadius: 17).strokeBorder(.primary.opacity(0.09)).allowsHitTesting(false) }
     }
 }
 

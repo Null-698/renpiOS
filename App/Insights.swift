@@ -152,6 +152,7 @@ struct InsightsView: View {
     let history: PlayHistory
     let titles: [UUID: String]
     let wide: Bool
+    @Environment(\.colorScheme) private var scheme
     @AppStorage("insightsEnabled") private var tracking = true
     @State private var selectedDay: String?
 
@@ -187,6 +188,8 @@ struct InsightsView: View {
                 .padding(.bottom, 16)
                 .frame(maxWidth: .infinity)
             }
+            .foregroundStyle(.primary)
+            .background(ink)
         }
     }
 
@@ -254,12 +257,13 @@ struct InsightsView: View {
             }
             .chartYAxis {
                 AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
-                    AxisGridLine().foregroundStyle(.white.opacity(0.10))
+                    AxisGridLine().foregroundStyle(Color.primary.opacity(0.12))
                     if let minutes = value.as(Double.self) {
                         AxisValueLabel { Text("\(Int(minutes))m").foregroundStyle(.secondary) }
                     }
                 }
             }
+            .id(scheme)
             .chartXSelection(value: $selectedDay)
             .frame(height: wide ? 174 : 152)
             .accessibilityLabel("Play time on your five busiest days")

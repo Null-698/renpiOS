@@ -19,6 +19,7 @@ final class CoverWebSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     var address: String
     var loading = false
     var imageURL: URL?
+    private var navigationID = UUID()
     var message: String?
     var candidate: Data?
     var saving = false
@@ -60,12 +61,22 @@ final class CoverWebSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         loading = true
         imageURL = nil
+        navigationID = UUID()
         message = nil
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         loading = false
         address = webView.url?.absoluteString ?? address
+        let token = navigationID
+        let host = webView.url?.host?.lowercased() ?? ""
+        if host == "itch.io" || host.hasSuffix(".itch.io") {
+            webView.evaluateJavaScript("document.querySelector('meta[property=\"og:image\"]')?.content || null") { [weak self] result, _ in
+                guard self?.navigationID == token, let value = result as? String,
+                      let url = URL(string: value), url.scheme == "https" else { return }
+                self?.imageURL = url
+            }
+        }
         let page = webView.url
         webView.evaluateJavaScript("document.images.length === 1 ? document.images[0].currentSrc : null") { [weak self] result, _ in
             guard self?.web.url == page,

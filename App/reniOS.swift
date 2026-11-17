@@ -10,7 +10,7 @@ func runReniOSLibrary() {
         "appearance": "dark", "accentRed": 0.96, "accentGreen": 0.73, "accentBlue": 0.48,
         "insightsEnabled": true, "showRecentGame": true, "showThumbnails": true,
         "libraryList": false, "librarySort": "recent", "controlsLayout": "horizontal",
-        "controlsOpacity": 1.0, "widescreen": false
+        "controlsOpacity": 1.0
     ])
     Session().run()
 }
@@ -55,10 +55,13 @@ final class Session {
         if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--launcher-preview") {
             let arguments = ProcessInfo.processInfo.arguments.dropFirst(index + 1)
             previewName = arguments.first
-            previewOpen = arguments.contains("landscape-open")
-            previewLandscape = previewOpen || arguments.contains("landscape") || arguments.contains("landscape-options")
-                || arguments.contains(where: { $0.hasPrefix("landscape-return") }) || arguments.contains("landscape-insights")
-            previewTab = arguments.compactMap(GameTab.init(rawValue:)).first
+            let screen = previewName?.replacingOccurrences(of: "-light", with: "") ?? ""
+            if screen == "Insights-off" {
+                UserDefaults.standard.register(defaults: ["insightsEnabled": false])
+            }
+            previewOpen = screen == "landscape-open"
+            previewLandscape = previewOpen || screen.hasPrefix("landscape")
+            previewTab = GameTab(rawValue: screen)
             if novels.isEmpty {
                 do {
                     _ = try LibraryStore.installDemo()
@@ -78,7 +81,7 @@ final class Session {
                     NSLog("reniOS carousel preview: %@", error.localizedDescription)
                 }
             }
-            if arguments.contains("Insights") || arguments.contains("landscape-insights"), let game = novels.first {
+            if screen == "Insights" || screen == "landscape-insights", let game = novels.first {
                 var history = PlayHistory()
                 for offset in [0, -1, -2, -5, -6, -7, -8] {
                     let date = Date.now.addingTimeInterval(Double(offset) * 86400)
@@ -254,7 +257,7 @@ final class Session {
         try FileManager.default.createDirectory(at: novel.saves, withIntermediateDirectories: true)
         let startedAt = Date.now
         let displayConfiguration = novel.root.appending(path: ".renios-display.json")
-        let fillScreen = UserDefaults.standard.bool(forKey: "widescreen")
+        let fillScreen = novel.fillScreen ?? false
         try JSONEncoder().encode(["fill": fillScreen]).write(to: displayConfiguration, options: .atomic)
         let overlay = makeGameOverlay()
         activity.begin(novel)
@@ -571,6 +574,7 @@ private struct LibraryScreen: View {
     @AppStorage("accentRed") private var accentRed = 0.96
     @AppStorage("accentGreen") private var accentGreen = 0.73
     @AppStorage("accentBlue") private var accentBlue = 0.48
+    @AppStorage("insightsEnabled") private var insightsEnabled = true
     @AppStorage("showRecentGame") private var showRecent = true
     @AppStorage("showThumbnails") private var showThumbnails = true
     @AppStorage("libraryList") private var libraryList = false
@@ -603,8 +607,9 @@ private struct LibraryScreen: View {
             _openedID = State(initialValue: id)
             _highlightedID = State(initialValue: id)
         }
-        _libraryTab = State(initialValue: previewName == "Settings" ? .settings : previewInsights == nil ? .library : .insights)
-        _selected = State(initialValue: previewTab != nil || previewName == "landscape-options" ? session.novels.first : nil)
+        let screen = previewName?.replacingOccurrences(of: "-light", with: "") ?? ""
+        _libraryTab = State(initialValue: screen == "Settings" || screen == "Appearance" ? .settings : previewInsights == nil ? .library : .insights)
+        _selected = State(initialValue: previewTab != nil || screen == "landscape-options" ? session.novels.first : nil)
         _wideLayout = State(initialValue: previewLandscape)
         _selectedTab = State(initialValue: previewTab ?? .overview)
     }
@@ -697,7 +702,10 @@ private struct LibraryScreen: View {
         }
         .background(ink.ignoresSafeArea())
         .preferredColorScheme(AppStyle.theme)
-        .tint(Color(red: accentRed, green: accentGreen, blue: accentBlue))
+        .tint(amber)
+        .onChange(of: insightsEnabled) { _, enabled in
+            if !enabled && libraryTab == .insights { libraryTab = .library }
+        }
         .onChange(of: appearance) { _, _ in AppStyle.applyToWindows() }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.zip, .folder, UTType(filenameExtension: "apk") ?? .data]) {
             switch $0 {
@@ -754,20 +762,25 @@ private struct LibraryScreen: View {
                     }
                 }
                 .frame(maxHeight: .infinity, alignment: .top)
+                .background(ink)
             }
 
-            Tab("Insights", systemImage: "chart.bar.xaxis", value: .insights) {
-                VStack(spacing: 0) {
-                    header("Insights")
-                    InsightsView(history: previewInsights ?? session.activity.history,
-                                 titles: Dictionary(uniqueKeysWithValues: games.map { ($0.id, $0.title) }),
-                                 wide: wide)
+            if insightsEnabled {
+                Tab("Insights", systemImage: "chart.bar.xaxis", value: .insights) {
+                    VStack(spacing: 0) {
+                        header("Insights")
+                        InsightsView(history: previewInsights ?? session.activity.history,
+                                     titles: Dictionary(uniqueKeysWithValues: games.map { ($0.id, $0.title) }),
+                                     wide: wide)
+                            .id(appearance)
+                    }
+                    .frame(maxHeight: .infinity, alignment: .top)
                 }
-                .frame(maxHeight: .infinity, alignment: .top)
+
             }
 
             Tab("Settings", systemImage: "gearshape", value: .settings) {
-                AppSettingsView()
+                AppSettingsView(initialPage: previewName?.replacingOccurrences(of: "-light", with: "") == "Appearance" ? .appearance : nil)
             }
 
             Tab(value: .search, role: .search) {
@@ -797,10 +810,10 @@ private struct LibraryScreen: View {
                         }
                     }
                 }
-                .searchable(text: $filter, isPresented: $searchPresented,
-                            placement: .navigationBarDrawer(displayMode: .always), prompt: "Search games")
             }
         }
+        .searchable(text: $filter, isPresented: $searchPresented, prompt: "Search games")
+        .searchToolbarBehavior(.minimize)
         .onChange(of: libraryTab) { _, tab in
             searchPresented = tab == .search
         }
@@ -818,7 +831,7 @@ private struct LibraryScreen: View {
                 .font(.subheadline.monospaced().weight(.semibold))
                 .foregroundStyle(cream)
             Rectangle()
-                .fill(.white.opacity(0.15))
+                .fill(.primary.opacity(0.15))
                 .frame(width: 1, height: 15)
                 .accessibilityHidden(true)
             Text(title)
@@ -1136,7 +1149,11 @@ private struct LibraryScreen: View {
                         if lastPlayed != nil {
                             Text("Last Played").font(.headline).accessibilityAddTraits(.isHeader)
                         }
-                        featureCard(feature, compact: false).frame(minHeight: 238)
+                        Button { showOptions(feature) } label: {
+                            featureCard(feature, compact: false).frame(minHeight: 238)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Open options for \(feature.title)")
                     }
                 }
                 HStack {
@@ -1229,16 +1246,7 @@ private struct LibraryScreen: View {
                     .foregroundStyle(.white)
                     .lineLimit(2)
                     .accessibilityAddTraits(.isHeader)
-                GlassEffectContainer(spacing: 10) {
-                    HStack(spacing: 10) {
-                        libraryAction("Play", icon: "play.fill", prominent: true) {
-                            session.launch(game)
-                        }
-                        .disabled(session.isImporting || Session.engine(for: game) == nil)
-                        libraryAction("Options", icon: "text.alignleft") { showOptions(game) }
-                    }
-                    .frame(maxWidth: 315)
-                }
+
             }
             .padding(compact ? 17 : 20)
         }
@@ -1442,8 +1450,8 @@ private enum GameTab: String, CaseIterable, Identifiable {
     case overview = "Overview"
     case saves = "Saves"
     case mods = "Mods"
-    case export = "Export"
-    case restore = "Restore"
+    case backups = "Backups"
+    case patches = "Patches"
 
     var id: Self { self }
 
@@ -1454,8 +1462,8 @@ private enum GameTab: String, CaseIterable, Identifiable {
         case .overview: "play.rectangle"
         case .saves: "square.stack"
         case .mods: "puzzlepiece.extension"
-        case .export: "square.and.arrow.up"
-        case .restore: "arrow.down.to.line"
+        case .backups: "archivebox"
+        case .patches: "wand.and.stars"
         }
     }
 }
@@ -1645,7 +1653,7 @@ private struct NovelSheet: View {
                 .labelStyle(.iconOnly)
                 .font(.subheadline.weight(.semibold))
                 .frame(width: 44, height: 44)
-                .background(.white.opacity(0.07), in: .circle)
+                .background(.primary.opacity(0.07), in: .circle)
                 .disabled(session.isImporting)
             VStack(alignment: .leading, spacing: 2) {
                 Text(novel.title)
@@ -1679,7 +1687,7 @@ private struct NovelSheet: View {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 16, weight: .semibold))
                     .frame(width: 44, height: 44)
-                    .background(.white.opacity(0.07), in: .circle)
+                    .background(.primary.opacity(0.07), in: .circle)
             }
             .accessibilityLabel("Game Options")
             .disabled(session.isImporting)
@@ -1762,9 +1770,28 @@ private struct NovelSheet: View {
         case .overview: EmptyView()
         case .saves: SaveManager(novel: novel)
         case .mods: ModManager(novel: novel, working: $session.isImporting)
-        case .export: SaveExportTab(novel: novel, working: $session.isImporting)
-        case .restore: SaveRestoreTab(novel: novel, session: session)
+        case .backups: BackupManager(novel: novel, session: session)
+        case .patches: patches
         }
+    }
+
+    private var patches: some View {
+        Form {
+            Section {
+                Toggle("Fill Screen", isOn: Binding(
+                    get: { novel.fillScreen ?? false },
+                    set: { value in
+                        var updated = novel
+                        updated.fillScreen = value
+                        session.update(updated)
+                    }
+                ))
+                .disabled(session.isImporting)
+            } footer: {
+                Text("Applies to this game on its next launch. Stretches the image to remove engine-generated borders. Borders in the artwork may remain.")
+            }
+        }
+        .scrollContentBackground(.hidden)
     }
 
     private var playButton: some View {
@@ -1775,7 +1802,9 @@ private struct NovelSheet: View {
             Label("Play", systemImage: "play.fill")
                 .font(.headline)
                 .frame(maxWidth: .infinity, minHeight: 50)
-                .foregroundStyle(ink)
+                .foregroundStyle(Color(uiColor: UIColor { traits in
+                    traits.userInterfaceStyle == .dark ? .black : .white
+                }))
                 .background(amber, in: .rect(cornerRadius: 15))
                 .contentShape(.rect)
         }

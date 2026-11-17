@@ -146,6 +146,12 @@ struct CoverFinder: View {
                         Text("No unique cover match.")
                     }
                     if let message { Text(message).foregroundStyle(.secondary) }
+                    if let itchSearch {
+                        Button("Search itch.io", systemImage: "gamecontroller") { browser = BrowserDestination(url: itchSearch) }
+                            .buttonStyle(.glassProminent)
+                        Text("Find the game’s page and tap its cover to preview it.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                     if let googleImages {
                         Button("Browse for a Cover", systemImage: "globe") { browser = BrowserDestination(url: googleImages) }
                             .buttonStyle(.glass)
@@ -176,6 +182,12 @@ struct CoverFinder: View {
             do { candidate = try await CoverLookup.match(title: title, developer: developer) }
             catch { message = "Online search is unavailable." }
         }
+    }
+
+    private var itchSearch: URL? {
+        var components = URLComponents(string: "https://itch.io/search")
+        components?.queryItems = [.init(name: "q", value: title), .init(name: "type", value: "games")]
+        return components?.url
     }
 
     private var googleImages: URL? {
