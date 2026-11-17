@@ -253,10 +253,10 @@ final class Session {
         }
         try FileManager.default.createDirectory(at: novel.saves, withIntermediateDirectories: true)
         let startedAt = Date.now
-        let overlay = makeGameOverlay()
         let displayConfiguration = novel.root.appending(path: ".renios-display.json")
         let fillScreen = UserDefaults.standard.bool(forKey: "widescreen")
         try JSONEncoder().encode(["fill": fillScreen]).write(to: displayConfiguration, options: .atomic)
+        let overlay = makeGameOverlay()
         activity.begin(novel)
         defer {
             activity.finish()
