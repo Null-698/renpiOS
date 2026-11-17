@@ -762,7 +762,7 @@ private struct LibraryScreen: View {
             }
 
             Tab("Settings", systemImage: "gearshape", value: .settings) {
-                AppSettingsView(session: session)
+                AppSettingsView()
             }
 
             Tab(value: .search, role: .search) {
@@ -1151,17 +1151,22 @@ private struct LibraryScreen: View {
                         ForEach(games) { game in
                             Button { showOptions(game) } label: {
                                 VStack(alignment: .leading, spacing: 8) {
-                                    CoverArt(url: showThumbnails ? game.cover : nil, tint: amber)
-                                        .aspectRatio(1.52, contentMode: .fit)
-                                        .overlay(alignment: .bottomLeading) {
-                                            gameVersions(game)
-                                                .padding(7)
-                                        }
-                                        .clipShape(.rect(cornerRadius: 12))
+                                    if showThumbnails {
+                                        CoverArt(url: showThumbnails ? game.cover : nil, tint: amber)
+                                            .aspectRatio(1.52, contentMode: .fit)
+                                            .overlay(alignment: .bottomLeading) {
+                                                gameVersions(game)
+                                                    .padding(7)
+                                            }
+                                            .clipShape(.rect(cornerRadius: 12))
+                                    }
                                     Text(game.title)
                                         .font(.subheadline.weight(.semibold))
                                         .lineLimit(2, reservesSpace: true)
+                                    if !showThumbnails { gameVersions(game) }
                                 }
+                                .padding(showThumbnails ? 0 : 12)
+                                .background(showThumbnails ? Color.clear : panel, in: .rect(cornerRadius: 12))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
                             .buttonStyle(.plain)

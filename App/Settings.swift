@@ -65,7 +65,6 @@ enum LibrarySort: String, CaseIterable, Identifiable {
 }
 
 struct AppSettingsView: View {
-    let session: Session
     @AppStorage("appearance") private var appearance = "dark"
     @AppStorage("accentRed") private var red = 0.96
     @AppStorage("accentGreen") private var green = 0.73

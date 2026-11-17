@@ -152,6 +152,7 @@ struct InsightsView: View {
     let history: PlayHistory
     let titles: [UUID: String]
     let wide: Bool
+    @AppStorage("insightsEnabled") private var tracking = true
     @State private var selectedDay: String?
 
     var body: some View {
@@ -162,6 +163,10 @@ struct InsightsView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    if !tracking {
+                        Label("Tracking Paused", systemImage: "pause.circle")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
                     if history.games.isEmpty {
                         ContentUnavailableView("No play time yet", systemImage: "chart.bar.xaxis",
                                                description: Text("Your activity appears after you play a game."))
