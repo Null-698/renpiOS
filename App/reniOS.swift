@@ -810,9 +810,9 @@ private struct LibraryScreen: View {
                         }
                     }
                 }
+                .searchable(text: $filter, isPresented: $searchPresented, prompt: "Search games")
             }
         }
-        .searchable(text: $filter, isPresented: $searchPresented, prompt: "Search games")
         .tabViewSearchActivation(.searchTabSelection)
     }
 
