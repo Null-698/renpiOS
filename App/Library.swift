@@ -13,6 +13,13 @@ struct Novel: Codable, Identifiable, Equatable, Sendable {
     var engineOverride: String?
     var orientation: GameOrientation?
     var fillScreen: Bool?
+    var layoutProfile: String?
+    var desktopPackage: Bool?
+
+    var effectiveLayout: String {
+        if let layoutProfile, layoutProfile != "auto" { return layoutProfile }
+        return desktopPackage == true ? "desktop" : "device"
+    }
     var gameFolder: String?
     var saveFolder: String?
     var saveIdentity: String?
@@ -326,11 +333,14 @@ enum LibraryStore {
 
         if try source.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true {
             try importDirectory(source, into: game)
+            let files = try fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
+            novel.desktopPackage = files.contains { $0.pathExtension.lowercased() == "exe" } ? true : nil
             novel.detectedEngine = detectInDirectory(source)
             projectName = source.lastPathComponent
         } else {
             let metadata = try importArchive(source, into: game)
             novel.detectedEngine = metadata.engine
+            novel.desktopPackage = metadata.desktop
             apkTitle = metadata.title
             apkVersion = metadata.version
             apkIdentifier = metadata.identifier
@@ -421,6 +431,7 @@ enum LibraryStore {
                 throw ImportFailure.saveFolderInUse
             }
             if updated.titleIsManual != true { updated.title = incoming.title }
+            updated.desktopPackage = incoming.desktopPackage
             updated.detectedEngine = incoming.detectedEngine
             updated.gameVersion = incoming.gameVersion
             updated.versionScanned = incoming.versionScanned
@@ -1042,7 +1053,7 @@ enum LibraryStore {
     }
 
     private static func importArchive(_ source: URL, into destination: URL)
-        throws -> (engine: String?, title: String?, identifier: String?, project: String?, version: String?) {
+        throws -> (engine: String?, title: String?, identifier: String?, project: String?, version: String?, desktop: Bool?) {
         let archive = try Archive(url: source, accessMode: .read)
         let isAPK = source.pathExtension.lowercased() == "apk"
         var entries: [(Entry, [String])] = []
@@ -1096,7 +1107,13 @@ enum LibraryStore {
             _ = try archive.extract(entry, to: output)
         }
         let detected = detectInArchive(archive, entries: entries, project: Array(prefix.dropLast()), android: isAPK)
-        guard isAPK else { return (detected, nil, nil, prefix.dropLast().last, nil) }
+        guard isAPK else {
+            let project = Array(prefix.dropLast())
+            let windows = entries.contains { entry in
+                Array(entry.1.dropLast()) == project && entry.1.last?.lowercased().hasSuffix(".exe") == true
+            }
+            return (detected, nil, nil, project.last, nil, windows ? true : nil)
+        }
         func androidFile(_ path: String, limit: Int) -> Data? {
             guard let entry = entries.first(where: { $0.1 == [path] })?.0,
                   UInt64(entry.uncompressedSize) <= UInt64(limit) else { return nil }
@@ -1108,7 +1125,7 @@ enum LibraryStore {
         let details = androidFile("AndroidManifest.xml", limit: 524_288).map { manifest in
             APKTitle.read(manifest: manifest) { androidFile("resources.arsc", limit: 16 * 1024 * 1024) }
         }
-        return (detected ?? detectInAndroidPrivateData(archive, entries: entries), details?.title, details?.identifier, nil, details?.version)
+        return (detected ?? detectInAndroidPrivateData(archive, entries: entries), details?.title, details?.identifier, nil, details?.version, false)
     }
 
     private static func importDirectory(_ source: URL, into destination: URL) throws {

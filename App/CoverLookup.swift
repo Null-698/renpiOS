@@ -149,7 +149,7 @@ struct CoverFinder: View {
                     if let itchSearch {
                         Button("Search itch.io", systemImage: "gamecontroller") { browser = BrowserDestination(url: itchSearch) }
                             .buttonStyle(.glassProminent)
-                        Text("Find the game’s page and tap its cover to preview it.")
+                        Text("Your itch.io preferences are remembered on this device.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     if let googleImages {

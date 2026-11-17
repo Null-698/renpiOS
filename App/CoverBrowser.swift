@@ -17,6 +17,7 @@ private final class CoverImageMessages: NSObject, WKScriptMessageHandler {
 final class CoverWebSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     let web: WKWebView
     var address: String
+    let browserTitle: String
     var loading = false
     var imageURL: URL?
     private var navigationID = UUID()
@@ -27,7 +28,10 @@ final class CoverWebSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     init(url: URL) {
         address = url.absoluteString
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
+        let host = url.host?.lowercased() ?? ""
+        let itchSession = host == "itch.io" || host.hasSuffix(".itch.io")
+        configuration.websiteDataStore = itchSession ? .default() : .nonPersistent()
+        browserTitle = itchSession ? "itch.io Cover Browser" : "Private Cover Browser"
         web = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         web.navigationDelegate = self
@@ -183,7 +187,7 @@ struct CoverBrowser: View {
                     Text(message).font(.footnote).foregroundStyle(.secondary).padding(8)
                 }
             }
-            .navigationTitle("Private Cover Browser")
+            .navigationTitle(session.browserTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }

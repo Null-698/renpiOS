@@ -258,7 +258,8 @@ final class Session {
         let startedAt = Date.now
         let displayConfiguration = novel.root.appending(path: ".renios-display.json")
         let fillScreen = novel.fillScreen ?? false
-        try JSONEncoder().encode(["fill": fillScreen]).write(to: displayConfiguration, options: .atomic)
+        let configuration: [String: Any] = ["fill": fillScreen, "layout": novel.effectiveLayout]
+        try JSONSerialization.data(withJSONObject: configuration).write(to: displayConfiguration, options: .atomic)
         let overlay = makeGameOverlay()
         activity.begin(novel)
         defer {
@@ -325,9 +326,7 @@ private final class PlaybackControlsController: UIViewController {
     private let controlsOpacity = UserDefaults.standard.object(forKey: "controlsOpacity") == nil
         ? 1.0 : min(max(UserDefaults.standard.double(forKey: "controlsOpacity"), 0.25), 1.0)
     private var independentPositions: [Int: CGPoint] = [:]
-    private var hideTask: Task<Void, Never>?
     private var expanded = false
-    private var dragging = false
     private var dragOrigin = CGPoint.zero
     private var dragPosition: CGPoint?
     private var dock = CGPoint(x: 1, y: 0)
@@ -397,11 +396,8 @@ private final class PlaybackControlsController: UIViewController {
 
     private func confirmExit() {
         guard presentedViewController == nil else { return }
-        hideTask?.cancel()
         let alert = UIAlertController(title: "Close Game?", message: "Return to your library.", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Keep Playing", style: .cancel) { [weak self] _ in
-            self?.scheduleCollapse()
-        })
+        alert.addAction(UIAlertAction(title: "Keep Playing", style: .cancel))
         alert.addAction(UIAlertAction(title: "Close Game", style: .destructive) { [weak self] _ in
             self?.setExpanded(false)
             renios_request_quit()
@@ -444,8 +440,6 @@ private final class PlaybackControlsController: UIViewController {
         let bounds = available
         switch recognizer.state {
         case .began:
-            hideTask?.cancel()
-            dragging = true
             dragOrigin = target.center
         case .changed:
             let translation = recognizer.translation(in: view)
@@ -459,8 +453,6 @@ private final class PlaybackControlsController: UIViewController {
             if let point = independentPositions[target.tag] {
                 UserDefaults.standard.set([Double(point.x), Double(point.y)], forKey: "controlPosition-\(target.tag)")
             }
-            dragging = false
-            scheduleCollapse()
         default: break
         }
     }
@@ -469,8 +461,6 @@ private final class PlaybackControlsController: UIViewController {
         guard let target = recognizer.view else { return }
         switch recognizer.state {
         case .began:
-            hideTask?.cancel()
-            dragging = true
             dragOrigin = target.center
         case .changed:
             let translation = recognizer.translation(in: view)
@@ -484,9 +474,7 @@ private final class PlaybackControlsController: UIViewController {
             if vertical > 0 { dock.y = min(max((target.frame.minY - bounds.minY) / vertical, 0), 1) }
             UserDefaults.standard.set([Double(dock.x), Double(dock.y)], forKey: "playbackControlsPosition")
             dragPosition = nil
-            dragging = false
             positionControls()
-            scheduleCollapse()
         default: break
         }
     }
@@ -504,9 +492,8 @@ private final class PlaybackControlsController: UIViewController {
         let button = UIButton(type: .system)
         button.configuration = configuration(symbol, tint: tint)
         button.accessibilityLabel = title
-        button.addAction(UIAction { [weak self] _ in
+        button.addAction(UIAction { _ in
             action()
-            self?.scheduleCollapse()
         }, for: .touchUpInside)
         button.widthAnchor.constraint(equalToConstant: 44).isActive = true
         button.heightAnchor.constraint(equalToConstant: 44).isActive = true
@@ -536,18 +523,9 @@ private final class PlaybackControlsController: UIViewController {
             self.handle.transform = showing && !reduced ? CGAffineTransform(scaleX: 0.78, y: 0.78) : .identity
             self.bar.transform = showing || reduced ? .identity : CGAffineTransform(scaleX: 0.87, y: 0.87)
         }
-        scheduleCollapse()
     }
 
-    private func scheduleCollapse() {
-        hideTask?.cancel()
-        guard expanded, !dragging, presentedViewController == nil else { return }
-        hideTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(8))
-            guard !Task.isCancelled else { return }
-            self?.setExpanded(false)
-        }
-    }
+
 }
 
 @MainActor var ink: Color {
@@ -1775,6 +1753,20 @@ private struct NovelSheet: View {
     private var patches: some View {
         Form {
             Section {
+                Picker("Game Layout", selection: Binding(
+                    get: { novel.layoutProfile ?? "auto" },
+                    set: { value in
+                        var updated = novel
+                        updated.layoutProfile = value
+                        session.update(updated)
+                    }
+                )) {
+                    Text(novel.desktopPackage == true ? "Auto · Desktop" : "Auto · Device").tag("auto")
+                    Text("Desktop").tag("desktop")
+                    Text("Phone").tag("phone")
+                    Text("Tablet").tag("tablet")
+                    Text("Device Default").tag("device")
+                }
                 Toggle("Fill Screen", isOn: Binding(
                     get: { novel.fillScreen ?? false },
                     set: { value in

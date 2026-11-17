@@ -97,12 +97,29 @@ struct AppSettingsView: View {
         }
     }
 
+    @State private var query = ""
+    private var matchingPages: [Page] {
+        let words = query.split(whereSeparator: { $0.isWhitespace })
+        return Page.allCases.filter { page in
+            let keywords: String
+            switch page {
+            case .appearance: keywords = "theme dark light system accent color reset"
+            case .insights: keywords = "enable disable tracking history streak play time"
+            case .library: keywords = "show last played recent cover thumbnails layout grid list sort"
+            case .controls: keywords = "opacity transparency horizontal vertical row separate buttons drag"
+            case .help: keywords = "guide import apk windows zip diagnostics crash saves mods backups patches"
+            }
+            let terms = page.rawValue + " " + keywords
+            return words.allSatisfy { terms.localizedStandardContains(String($0)) }
+        }
+    }
+
     @State private var path: [Page]
     init(initialPage: Page? = nil) { _path = State(initialValue: initialPage.map { [$0] } ?? []) }
 
     var body: some View {
         NavigationStack(path: $path) {
-            List(Page.allCases) { page in
+            List(matchingPages) { page in
                 NavigationLink(value: page) {
                     Label(page.rawValue, systemImage: page.icon)
                         .padding(.vertical, 8)
@@ -110,6 +127,8 @@ struct AppSettingsView: View {
             }
             .scrollContentBackground(.hidden)
             .background(ink)
+            .overlay { if matchingPages.isEmpty { ContentUnavailableView.search(text: query) } }
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search settings")
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: Page.self) { page in

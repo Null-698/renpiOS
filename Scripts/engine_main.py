@@ -38,6 +38,18 @@ def play():
     original_modules = set(sys.modules)
     original_excepthook = sys.excepthook
     try:
+        # Ren'Py chooses screen variants before running the game's init scripts.
+        # The environment snapshot below also isolates back-to-back launches.
+        import json
+        try:
+            with open(os.path.join(project, ".renios-display.json"), "rb") as source:
+                layout = json.load(source).get("layout")
+        except (IOError, ValueError):
+            layout = None
+        variants = {"desktop": "large pc touch", "phone": "small phone touch ios mobile",
+                    "tablet": "medium tablet touch ios mobile"}.get(layout)
+        if variants:
+            os.environ["RENPY_VARIANT"] = variants
         if entry is None:
             module = sys.modules["__main__"]
             module.__file__ = os.path.join(path, "renpy_entry.py")
