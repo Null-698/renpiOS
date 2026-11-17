@@ -294,6 +294,7 @@ final class Session {
         overlay.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.alert.rawValue - 1)
         let controls = PlaybackControlsController()
         overlay.rootViewController = controls
+        controls.loadViewIfNeeded()
         overlay.touchTargets = [controls.handle, controls.bar] + controls.independentButtons
         overlay.isHidden = false
         return overlay
@@ -357,6 +358,10 @@ private final class PlaybackControlsController: UIViewController {
             for (index, button) in independentButtons.enumerated() {
                 bar.removeArrangedSubview(button)
                 button.removeFromSuperview()
+                for constraint in button.constraints where constraint.firstAttribute == .width || constraint.firstAttribute == .height {
+                    constraint.isActive = false
+                }
+                button.translatesAutoresizingMaskIntoConstraints = true
                 button.tag = index
                 let values = UserDefaults.standard.array(forKey: "controlPosition-\(index)") as? [Double]
                 if let values, values.count == 2, values.allSatisfy({ $0.isFinite && (0...1).contains($0) }) {
