@@ -447,6 +447,7 @@ private extension View {
     }
 }
 
+@MainActor
 private func managementIcon(_ icon: String) -> some View {
     Image(systemName: icon)
         .font(.system(size: 17, weight: .medium))
@@ -456,6 +457,7 @@ private func managementIcon(_ icon: String) -> some View {
         .accessibilityHidden(true)
 }
 
+@MainActor
 private func archiveRow(_ title: String, icon: String, archive: LibraryStore.SaveArchive, action: String) -> some View {
     HStack(spacing: 12) {
         managementIcon(icon)
@@ -505,3 +507,4 @@ private struct ManagementPanel<Content: View>: View {
         .overlay { RoundedRectangle(cornerRadius: 17).strokeBorder(.white.opacity(0.09)).allowsHitTesting(false) }
     }
 }
+

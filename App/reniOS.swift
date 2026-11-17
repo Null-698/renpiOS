@@ -1014,7 +1014,7 @@ private struct LibraryScreen: View {
                         .lineLimit(2)
                     gameVersions(game)
                 }
-                .foregroundStyle(cream)
+                .foregroundStyle(.white)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 11)
             }
@@ -1105,7 +1105,7 @@ private struct LibraryScreen: View {
             }
         }
         .font(.caption2.monospacedDigit().weight(.medium))
-        .foregroundStyle(.white.opacity(0.94))
+        .foregroundStyle(.primary)
         .lineLimit(1)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -1218,15 +1218,15 @@ private struct LibraryScreen: View {
         ZStack(alignment: .bottomLeading) {
             CoverArt(url: showThumbnails ? game.cover : nil, tint: amber)
             LinearGradient(stops: [.init(color: .clear, location: 0.15),
-                                   .init(color: ink.opacity(0.52), location: 0.49),
-                                   .init(color: ink.opacity(0.98), location: 1)],
+                                   .init(color: Color.black.opacity(0.52), location: 0.49),
+                                   .init(color: Color.black.opacity(0.88), location: 1)],
                            startPoint: .top, endPoint: .bottom)
                 .allowsHitTesting(false)
             VStack(alignment: .leading, spacing: compact ? 7 : 10) {
                 gameVersions(game)
                 Text(game.title)
                     .font(.system(compact ? .largeTitle : .title, design: .serif).weight(.semibold))
-                    .foregroundStyle(cream)
+                    .foregroundStyle(.white)
                     .lineLimit(2)
                     .accessibilityAddTraits(.isHeader)
                 GlassEffectContainer(spacing: 10) {
