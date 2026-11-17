@@ -813,10 +813,7 @@ private struct LibraryScreen: View {
             }
         }
         .searchable(text: $filter, isPresented: $searchPresented, prompt: "Search games")
-        .searchToolbarBehavior(.minimize)
-        .onChange(of: libraryTab) { _, tab in
-            searchPresented = tab == .search
-        }
+        .tabViewSearchActivation(.searchTabSelection)
     }
 
     private func header(_ title: String, showsImport: Bool = false) -> some View {
