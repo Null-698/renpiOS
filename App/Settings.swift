@@ -9,7 +9,7 @@ enum AppStyle {
         if let index = arguments.firstIndex(of: "--launcher-preview"),
            arguments.dropFirst(index + 1).first?.hasSuffix("-light") == true { return .light }
         #endif
-        switch UserDefaults.standard.string(forKey: "appearance") ?? "dark" {
+        return switch UserDefaults.standard.string(forKey: "appearance") ?? "dark" {
         case "light": .light
         case "system": nil
         default: .dark
