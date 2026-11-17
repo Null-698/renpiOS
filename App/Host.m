@@ -26,6 +26,7 @@ typedef int (*EnginePushEvent)(void *);
 typedef void (*LegacyEventPump)(int);
 
 static EnginePushEvent activePushEvent;
+static NSURL *confirmedExitMarker;
 static BOOL activeSDL3;
 static void (*activeStartKeyboard)(void);
 
@@ -260,6 +261,9 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
         legacyScene = nil;
         return -2;
     }
+    confirmedExitMarker = [[NSURL fileURLWithPath:@(project) isDirectory:YES]
+        URLByAppendingPathComponent:@".renios-confirmed-exit"];
+    [NSFileManager.defaultManager removeItemAtURL:confirmedExitMarker error:NULL];
     activePushEvent = push;
     activeSDL3 = RENIOS_SDL3 && !prefix;
     activeStartKeyboard = startKeyboard;
@@ -287,6 +291,8 @@ int renios_play(const char *project, const char *saves, const char *engine, cons
     int status = entry(base.fileSystemRepresentation, project, saves);
     NSLog(@"Ren’Py %@ returned %d", version, status);
     activePushEvent = NULL;
+    [NSFileManager.defaultManager removeItemAtURL:confirmedExitMarker error:NULL];
+    confirmedExitMarker = nil;
     activeStartKeyboard = NULL;
     keyboardDismissedByPlayer = NO;
     gameController = nil;
@@ -367,7 +373,14 @@ void renios_request_quit(void) {
         uint64_t storage[32];
     } event = {0};
     event.type = 0x100;
-    if (activePushEvent) { activePushEvent(&event); }
+    if (!activePushEvent || !confirmedExitMarker) { return; }
+    NSError *error = nil;
+    if (![[NSData data] writeToURL:confirmedExitMarker options:NSDataWritingAtomic error:&error]) {
+        NSLog(@"reniOS could not mark the confirmed exit: %@", error.localizedDescription);
+    }
+    if (activePushEvent(&event) <= 0) {
+        [NSFileManager.defaultManager removeItemAtURL:confirmedExitMarker error:NULL];
+    }
 }
 
 static int showLibrary(int argc, char **argv) {

@@ -51,7 +51,7 @@ fi
 data=$(bounded 30 xcrun simctl get_app_container "$udid" "$bundle" data)
 ready="$data/Library/Caches/renios-preview.txt"
 mkdir -p out/launcher-preview out/preview-logs
-for screen in Library Overview Saves Mods Export Restore Insights landscape landscape-open; do
+for screen in Library Overview Saves Mods Export Restore Insights landscape landscape-open landscape-options; do
   bounded 15 xcrun simctl terminate "$udid" "$bundle" >/dev/null 2>&1 || true
   rm -f "$ready"
   if ! launch=$(bounded 60 xcrun simctl launch --terminate-running-process \

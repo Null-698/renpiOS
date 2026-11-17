@@ -1,3 +1,4 @@
+import Charts
 import SwiftUI
 import UIKit
 
@@ -144,6 +145,7 @@ final class PlayActivity: NSObject {
 struct InsightsView: View {
     let history: PlayHistory
     let titles: [UUID: String]
+    @State private var selectedDay: String?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -173,19 +175,7 @@ struct InsightsView: View {
                             .padding(16).frame(maxWidth: .infinity, alignment: .leading)
                             .background(panel, in: .rect(cornerRadius: 16))
                         }
-                        VStack(alignment: .leading, spacing: 9) {
-                            Text("Most played days").font(.headline)
-                            ForEach(history.days.keys.sorted { (history.days[$0] ?? 0, $0) > (history.days[$1] ?? 0, $1) }.prefix(5), id: \.self) { day in
-                                HStack {
-                                    Text(day, format: Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: .gmt))
-                                    Spacer()
-                                    Text(duration(history.days[day] ?? 0)).monospacedDigit().foregroundStyle(amber)
-                                }
-                                .font(.subheadline)
-                                .padding(12)
-                                .background(panel, in: .rect(cornerRadius: 11))
-                            }
-                        }
+                        busiestDays
                     }
                 }
                 .frame(maxWidth: 780)
@@ -194,6 +184,72 @@ struct InsightsView: View {
                 .frame(maxWidth: .infinity)
             }
         }
+    }
+
+    private var busiestDays: some View {
+        let days = rankedDays
+        let spansYears = Set(days.map { PlayHistory.dayCalendar.component(.year, from: $0.key) }).count > 1
+        let shortDate = Date.FormatStyle(timeZone: .gmt).month(.abbreviated).day()
+        let format = spansYears ? shortDate.year(.twoDigits) : shortDate
+        let points = days.map { entry in
+            DayBar(date: entry.key, label: entry.key.formatted(format), seconds: entry.value)
+        }
+        let active = points.first { $0.label == selectedDay } ?? points.max { $0.seconds < $1.seconds }
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Most played days").font(.headline)
+                Spacer()
+                if let active {
+                    Text("\(active.label) · \(duration(active.seconds))")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(amber)
+                }
+            }
+            Chart(points) { day in
+                BarMark(
+                    x: .value("Day", day.label),
+                    y: .value("Minutes played", day.seconds / 60),
+                    width: .ratio(0.56)
+                )
+                .cornerRadius(5)
+                .foregroundStyle(LinearGradient(
+                    colors: [amber.opacity(day.id == active?.id ? 1 : 0.75), amber.opacity(0.24)],
+                    startPoint: .top, endPoint: .bottom
+                ))
+                .accessibilityLabel(Text(day.date, format: Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: .gmt)))
+                .accessibilityValue(Text(duration(day.seconds)))
+            }
+            .chartXAxis {
+                AxisMarks { _ in AxisValueLabel().foregroundStyle(Color.secondary) }
+            }
+            .chartYAxis {
+                AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
+                    AxisGridLine().foregroundStyle(.white.opacity(0.10))
+                    if let minutes = value.as(Double.self) {
+                        AxisValueLabel { Text("\(Int(minutes))m").foregroundStyle(.secondary) }
+                    }
+                }
+            }
+            .chartXSelection(value: $selectedDay)
+            .frame(height: 152)
+            .accessibilityLabel("Play time on your five busiest days")
+        }
+        .padding(16)
+        .background(panel, in: .rect(cornerRadius: 16))
+    }
+
+    private var rankedDays: [(key: Date, value: TimeInterval)] {
+        history.days.sorted { ($0.value, $0.key) > ($1.value, $1.key) }
+            .prefix(5)
+            .sorted { $0.key < $1.key }
+    }
+
+    private struct DayBar: Identifiable {
+        let date: Date
+        let label: String
+        let seconds: TimeInterval
+        var id: Date { date }
     }
 
     private func metric(_ title: String, _ value: String, _ icon: String) -> some View {

@@ -50,7 +50,7 @@ final class Session {
             let arguments = ProcessInfo.processInfo.arguments.dropFirst(index + 1)
             previewName = arguments.first
             previewOpen = arguments.contains("landscape-open")
-            previewLandscape = previewOpen || arguments.contains("landscape")
+            previewLandscape = previewOpen || arguments.contains("landscape") || arguments.contains("landscape-options")
             previewTab = arguments.compactMap(GameTab.init(rawValue:)).first
             if novels.isEmpty {
                 do {
@@ -277,6 +277,7 @@ final class Session {
         let overlay: TouchThroughWindow
         if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
             overlay = TouchThroughWindow(windowScene: scene)
+            overlay.frame = scene.coordinateSpace.bounds
         } else {
             overlay = TouchThroughWindow(frame: UIScreen.main.bounds)
         }
@@ -293,6 +294,9 @@ private final class TouchThroughWindow: UIWindow {
     var touchTargets: [UIView] = []
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if rootViewController?.presentedViewController != nil {
+            return super.hitTest(point, with: event)
+        }
         guard touchTargets.contains(where: { !$0.isHidden && $0.isUserInteractionEnabled && $0.alpha > 0.01 && $0.bounds.contains(convert(point, to: $0)) }) else { return nil }
         return super.hitTest(point, with: event)
     }
@@ -330,9 +334,8 @@ private final class PlaybackControlsController: UIViewController {
         bar.addArrangedSubview(button("Skip", "forward.end.fill") { renios_playback_key(43, 9) })
         bar.addArrangedSubview(button("Game Settings", "gearshape") { renios_playback_key(41, 27) })
         bar.addArrangedSubview(button("Show or Hide Keyboard", "keyboard") { renios_toggle_keyboard() })
-        bar.addArrangedSubview(button("Close Game", "xmark", tint: .systemOrange) { [weak self] in
-            self?.setExpanded(false)
-            renios_request_quit()
+        bar.addArrangedSubview(button("Close Game", "power", tint: .systemOrange) { [weak self] in
+            self?.confirmExit()
         })
         view.addSubview(bar)
         bar.alpha = 0
@@ -349,9 +352,20 @@ private final class PlaybackControlsController: UIViewController {
         positionControls()
     }
 
-    private var available: CGRect {
-        let frame = view.safeAreaLayoutGuide.layoutFrame
-        return (frame.isEmpty ? view.bounds : frame).insetBy(dx: 7, dy: 6)
+    private var available: CGRect { view.bounds }
+
+    private func confirmExit() {
+        guard presentedViewController == nil else { return }
+        hideTask?.cancel()
+        let alert = UIAlertController(title: "Close Game?", message: "Return to your library.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Keep Playing", style: .cancel) { [weak self] _ in
+            self?.scheduleCollapse()
+        })
+        alert.addAction(UIAlertAction(title: "Close Game", style: .destructive) { [weak self] _ in
+            self?.setExpanded(false)
+            renios_request_quit()
+        })
+        present(alert, animated: !UIAccessibility.isReduceMotionEnabled)
     }
 
     private func positionControls() {
@@ -443,7 +457,7 @@ private final class PlaybackControlsController: UIViewController {
 
     private func scheduleCollapse() {
         hideTask?.cancel()
-        guard expanded, !dragging else { return }
+        guard expanded, !dragging, presentedViewController == nil else { return }
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(8))
             guard !Task.isCancelled else { return }
@@ -473,6 +487,8 @@ private struct LibraryScreen: View {
     @State private var openedID: Novel.ID?
     @State private var showingInsights = false
     @State private var coverAccent: Color?
+    @State private var wideLayout = false
+    @Namespace private var optionsMotion
     @FocusState private var searching: Bool
     @FocusState private var focusedGame: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -489,7 +505,8 @@ private struct LibraryScreen: View {
             _highlightedID = State(initialValue: id)
         }
         _showingInsights = State(initialValue: previewInsights != nil)
-        _selected = State(initialValue: previewTab == nil ? nil : session.novels.first)
+        _selected = State(initialValue: previewTab != nil || previewName == "landscape-options" ? session.novels.first : nil)
+        _wideLayout = State(initialValue: previewLandscape)
         _selectedTab = State(initialValue: previewTab ?? .overview)
     }
 
@@ -504,11 +521,22 @@ private struct LibraryScreen: View {
             let games = visibleNovels
 
             let feature = games.first(where: { $0.id == highlightedID }) ?? games.first
+            let inlineGame = wide ? selected : nil
+            let backdropGame = inlineGame ?? feature
             VStack(spacing: 0) {
-                header(wide: wide)
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, wide ? 9 : 13)
-                if showingInsights {
+                if inlineGame == nil {
+                    header(wide: wide)
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, wide ? 9 : 13)
+                }
+                if let inlineGame {
+                    NovelSheet(novel: inlineGame, session: session, initialTab: selectedTab, namespace: optionsMotion,
+                               close: { withAnimation(carouselMotion) { selected = nil } }) { game in
+                        session.launch(game)
+                    }
+                    .id(inlineGame.id)
+                    .transition(.opacity)
+                } else if showingInsights {
                     InsightsView(history: previewInsights ?? session.activity.history,
                                  titles: Dictionary(uniqueKeysWithValues: session.novels.map { ($0.id, $0.title) }))
                         .transition(.opacity)
@@ -529,6 +557,7 @@ private struct LibraryScreen: View {
             }
             .frame(maxWidth: 1320)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .onChange(of: wide, initial: true) { _, value in wideLayout = value }
             .task(id: wide) {
                 guard let previewName, wide == previewLandscape else { return }
                 try? await Task.sleep(for: .milliseconds(850))
@@ -536,8 +565,8 @@ private struct LibraryScreen: View {
                 let marker = URL.cachesDirectory.appending(path: "renios-preview.txt")
                 try? Data(previewName.utf8).write(to: marker, options: .atomic)
             }
-            .task(id: wide ? feature?.cover : nil) {
-                let url = wide ? feature?.cover : nil
+            .task(id: wide ? backdropGame?.cover : nil) {
+                let url = wide ? backdropGame?.cover : nil
                 let rgb = await Task.detached(priority: .utility) { Self.coverColor(at: url) }.value
                 guard !Task.isCancelled else { return }
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.32)) {
@@ -549,7 +578,7 @@ private struct LibraryScreen: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if !showingInsights { searchDock(wide: wide).padding(.vertical, 6) }
+                if inlineGame == nil { bottomDock(wide: wide) }
             }
             .background {
                 if wide && !showingInsights && !searching, let coverAccent {
@@ -569,7 +598,8 @@ private struct LibraryScreen: View {
             case .failure(let error): session.message = error.localizedDescription
             }
         }
-        .sheet(item: $selected, onDismiss: launchSelectedGame) { novel in
+        .sheet(item: Binding(get: { wideLayout ? nil : selected },
+                             set: { if !wideLayout { selected = $0 } }), onDismiss: launchSelectedGame) { novel in
             NovelSheet(novel: novel, session: session, initialTab: selectedTab) { game in
                 gameToLaunch = game
             }
@@ -587,12 +617,12 @@ private struct LibraryScreen: View {
             get: { !showingImportReview && session.updatedGameWithMods != nil },
             set: { if !$0 { session.updatedGameWithMods = nil } }
         ), presenting: session.updatedGameWithMods) { game in
-            Button("Open Mods") { showDetails(game, tab: .mods) }
+            Button("Open Mods") { showOptions(game, tab: .mods) }
         } message: { game in
             Text("\(game.title) was updated. Your mods are still installed. Re-enable the ones you want in Mods.")
         }
         .alert("reniOS", isPresented: Binding(
-            get: { session.message != nil },
+            get: { !(wideLayout && selected != nil) && session.message != nil },
             set: { if !$0 { session.message = nil } }
         )) {
             Button("OK", role: .cancel) { session.message = nil }
@@ -616,8 +646,10 @@ private struct LibraryScreen: View {
                 .fill(.white.opacity(0.15))
                 .frame(width: 1, height: 15)
                 .accessibilityHidden(true)
-            libraryTab("Library", insights: false)
-            libraryTab("Insights", insights: true)
+            Text(showingInsights ? "Insights" : "Library")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
             Spacer()
             if session.isImporting {
                 ProgressView()
@@ -628,18 +660,49 @@ private struct LibraryScreen: View {
         }
     }
 
-    private func libraryTab(_ title: String, insights: Bool) -> some View {
+    private func bottomDock(wide: Bool) -> some View {
+        Group {
+            if wide && !showingInsights {
+                HStack(spacing: 12) {
+                    searchDock(wide: true)
+                    libraryTabs
+                }
+                .frame(maxWidth: 780)
+            } else {
+                VStack(spacing: 8) {
+                    if !showingInsights { searchDock(wide: false) }
+                    libraryTabs
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var libraryTabs: some View {
+        HStack(spacing: 5) {
+            libraryTab("Library", icon: "books.vertical", insights: false)
+            libraryTab("Insights", icon: "chart.bar.xaxis", insights: true)
+        }
+        .padding(4)
+        .glassEffect(.regular, in: .capsule)
+    }
+
+    private func libraryTab(_ title: String, icon: String, insights: Bool) -> some View {
         let active = showingInsights == insights
         return Button {
             searching = false
             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { showingInsights = insights }
         } label: {
-            Text(title)
-                .font(.subheadline.weight(active ? .semibold : .medium))
-                .foregroundStyle(active ? amber : .secondary)
-                .padding(.horizontal, 4)
-                .frame(minHeight: 44)
-                .contentShape(.rect)
+            VStack(spacing: 2) {
+                Image(systemName: icon).font(.system(size: 15, weight: .semibold))
+                Text(title).font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(active ? amber : .secondary)
+            .frame(minWidth: 68, minHeight: 40)
+            .background(active ? amber.opacity(0.16) : .clear, in: .capsule)
+            .contentShape(.capsule)
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(active ? .isSelected : [])
@@ -650,7 +713,7 @@ private struct LibraryScreen: View {
             searching = false
             importing = true
         } label: {
-            Image(systemName: "square.and.arrow.down")
+            Image(systemName: "plus")
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(amber)
                 .frame(width: 48, height: 48)
@@ -689,7 +752,6 @@ private struct LibraryScreen: View {
             }
             .frame(maxWidth: wide ? 510 : 450)
         }
-        .padding(.horizontal, 20)
         .frame(maxWidth: .infinity)
     }
 
@@ -767,6 +829,7 @@ private struct LibraryScreen: View {
                     RoundedRectangle(cornerRadius: 19)
                         .strokeBorder(selected ? amber.opacity(0.8) : .white.opacity(0.16), lineWidth: selected ? 2 : 1)
                 }
+                .matchedGeometryEffect(id: game.id, in: optionsMotion)
                 .contentShape(.rect(cornerRadius: 19))
         }
         .buttonStyle(.plain)
@@ -777,10 +840,17 @@ private struct LibraryScreen: View {
 
         return ZStack(alignment: .trailing) {
             if open {
-                RoundedRectangle(cornerRadius: 19)
-                    .fill(panel.opacity(0.88))
+                CoverArt(url: game.cover, tint: carouselTint(game))
+                    .scaleEffect(1.15)
+                    .blur(radius: 32)
+                    .overlay {
+                        LinearGradient(colors: [ink.opacity(0.42), ink.opacity(0.70)],
+                                       startPoint: .leading, endPoint: .trailing)
+                    }
+                    .clipShape(.rect(cornerRadius: 19))
                     .overlay { RoundedRectangle(cornerRadius: 19).strokeBorder(.white.opacity(0.12)) }
                     .transition(.opacity)
+                    .allowsHitTesting(false)
             }
             cover
                 .frame(width: reduceMotion && open ? width * 0.52 : width, height: height)
@@ -792,7 +862,7 @@ private struct LibraryScreen: View {
                     VStack(spacing: 10) {
                         libraryAction("Play", icon: "play.fill", prominent: true) { session.launch(game) }
                             .disabled(session.isImporting || Session.engine(for: game) == nil)
-                        libraryAction("Details", icon: "text.alignleft") { showDetails(game) }
+                        libraryAction("Options", icon: "text.alignleft") { showOptions(game) }
                     }
                     .padding(.horizontal, 13)
                 }
@@ -883,7 +953,7 @@ private struct LibraryScreen: View {
         ScrollView {
             LazyVStack(spacing: 3) {
                 ForEach(games) { game in
-                    Button { showDetails(game) } label: { gameRow(game, highlighted: false) }
+                    Button { showOptions(game) } label: { gameRow(game, highlighted: false) }
                         .buttonStyle(.plain)
                 }
             }
@@ -914,7 +984,7 @@ private struct LibraryScreen: View {
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 12)], spacing: 16) {
                     ForEach(games) { game in
-                        Button { showDetails(game) } label: {
+                        Button { showOptions(game) } label: {
                             VStack(alignment: .leading, spacing: 8) {
                                 CoverArt(url: game.cover, tint: amber)
                                     .aspectRatio(1.52, contentMode: .fit)
@@ -988,7 +1058,7 @@ private struct LibraryScreen: View {
                             session.launch(game)
                         }
                         .disabled(session.isImporting || Session.engine(for: game) == nil)
-                        libraryAction("Details", icon: "text.alignleft") { showDetails(game) }
+                        libraryAction("Options", icon: "text.alignleft") { showOptions(game) }
                     }
                     .frame(maxWidth: 315)
                 }
@@ -1029,10 +1099,13 @@ private struct LibraryScreen: View {
         .disabled(session.isImporting)
     }
 
-    private func showDetails(_ game: Novel, tab: GameTab = .overview) {
+    private func showOptions(_ game: Novel, tab: GameTab = .overview) {
         searching = false
         selectedTab = tab
-        selected = game
+        withAnimation(wideLayout ? carouselMotion : nil) {
+            if wideLayout { highlightedID = game.id }
+            selected = game
+        }
     }
 
     private func launchSelectedGame() {
@@ -1202,6 +1275,9 @@ private struct NovelSheet: View {
     @Environment(\.dynamicTypeSize) private var dynamicType
     let game: Novel
     let launch: (Novel) -> Void
+    let namespace: Namespace.ID?
+    let close: (() -> Void)?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable var session: Session
     @State private var tab: GameTab = .overview
     @State private var choosingCover = false
@@ -1211,10 +1287,13 @@ private struct NovelSheet: View {
     @State private var renaming = false
     @State private var newTitle = ""
 
-    init(novel: Novel, session: Session, initialTab: GameTab, launch: @escaping (Novel) -> Void) {
+    init(novel: Novel, session: Session, initialTab: GameTab, namespace: Namespace.ID? = nil,
+         close: (() -> Void)? = nil, launch: @escaping (Novel) -> Void) {
         game = novel
         self.session = session
         self.launch = launch
+        self.namespace = namespace
+        self.close = close
         _tab = State(initialValue: initialTab)
     }
 
@@ -1241,56 +1320,19 @@ private struct NovelSheet: View {
     var body: some View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 560 && geometry.size.width > geometry.size.height && !dynamicType.isAccessibilitySize
-            VStack(spacing: 10) {
-                header
-                if wide {
-                    HStack(spacing: 14) {
-                        tabRail
-                        if tab == .overview {
-                            ScrollView {
-                                HStack(alignment: .top, spacing: 16) {
-                                    artwork.frame(height: 195)
-                                    VStack(alignment: .leading, spacing: 12) {
-                                        playButton
-                                        settings
-                                    }
-                                    .frame(maxWidth: .infinity)
-                                }
-                            }
-                        } else {
-                            ScrollView {
-                                VStack(spacing: 9) {
-                                    artwork.frame(height: 125)
-                                    playButton
-                                }
-                            }
-                            .frame(width: min(geometry.size.width * 0.27, 275))
-                            managementPage
-                        }
-                    }
-                } else {
-                    if tab == .overview {
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 13) {
-                                artwork.frame(height: 195)
-                                playButton
-                                settings
-                            }
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        managementPage
-                    }
-                    tabBar
-                }
+            Group {
+                if namespace != nil { inlineOptions(width: geometry.size.width) }
+                else { sheetOptions(wide: wide, width: geometry.size.width) }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 17)
+            .padding(.top, namespace == nil ? 17 : 6)
             .padding(.bottom, 6)
             .frame(maxWidth: 1100)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .background(ink.ignoresSafeArea())
+        .background {
+            if namespace == nil { ink.ignoresSafeArea() }
+        }
         .tint(amber)
         .preferredColorScheme(.dark)
         .interactiveDismissDisabled(session.isImporting)
@@ -1317,8 +1359,8 @@ private struct NovelSheet: View {
                 .tint(amber)
         }
         .confirmationDialog("Remove \(novel.title)?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
-            Button("Remove Game, Keep Saves") { session.delete(novel, keepingSaves: true); dismiss() }
-            Button("Remove Game and Saves", role: .destructive) { session.delete(novel, keepingSaves: false); dismiss() }
+            Button("Remove Game, Keep Saves") { session.delete(novel, keepingSaves: true); leaveOptions() }
+            Button("Remove Game and Saves", role: .destructive) { session.delete(novel, keepingSaves: false); leaveOptions() }
         }
         .alert("Rename Game", isPresented: $renaming) {
             TextField("Game title", text: $newTitle)
@@ -1332,9 +1374,84 @@ private struct NovelSheet: View {
         } message: { Text(session.message ?? "") }
     }
 
+    private func inlineOptions(width: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: 22) {
+            VStack(spacing: 10) {
+                if let namespace {
+                    artwork.matchedGeometryEffect(id: game.id, in: namespace)
+                }
+                playButton
+            }
+            .frame(width: min(width * 0.34, 300))
+            .padding(.vertical, 6)
+            VStack(spacing: 10) {
+                header
+                tabBar
+                if tab == .overview {
+                    ScrollView { settings }
+                        .frame(maxHeight: .infinity, alignment: .top)
+                } else {
+                    managementPage
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .transition(reduceMotion ? .opacity : .offset(x: 30, y: 0).combined(with: .opacity))
+        }
+    }
+
+    private func sheetOptions(wide: Bool, width: CGFloat) -> some View {
+            VStack(spacing: 10) {
+                header
+                if wide {
+                    HStack(spacing: 14) {
+                        tabRail
+                        if tab == .overview {
+                            ScrollView {
+                                HStack(alignment: .top, spacing: 16) {
+                                    artwork.frame(height: 195)
+                                    VStack(alignment: .leading, spacing: 12) {
+                                        playButton
+                                        settings
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                }
+                            }
+                        } else {
+                            ScrollView {
+                                VStack(spacing: 9) {
+                                    artwork.frame(height: 125)
+                                    playButton
+                                }
+                            }
+                            .frame(width: min(width * 0.27, 275))
+                            managementPage
+                        }
+                    }
+                } else {
+                    if tab == .overview {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 13) {
+                                artwork.frame(height: 195)
+                                playButton
+                                settings
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        managementPage
+                    }
+                    tabBar
+                }
+            }
+    }
+
+    private func leaveOptions() {
+        if let close { close() } else { dismiss() }
+    }
+
     private var header: some View {
         HStack(spacing: 11) {
-            Button("Close Game Details", systemImage: "xmark") { dismiss() }
+            Button("Back to Library", systemImage: namespace == nil ? "xmark" : "chevron.left") { leaveOptions() }
                 .labelStyle(.iconOnly)
                 .font(.subheadline.weight(.semibold))
                 .frame(width: 44, height: 44)
@@ -1463,7 +1580,7 @@ private struct NovelSheet: View {
     private var playButton: some View {
         Button {
             launch(novel)
-            dismiss()
+            leaveOptions()
         } label: {
             Label("Play", systemImage: "play.fill")
                 .font(.headline)

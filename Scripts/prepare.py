@@ -289,7 +289,22 @@ def configure_game_reload(engine):
     source = source.replace('    if not renpy.session.get("_keep_renderer", False):',
                             '    if renpy.display.draw is not None and not renpy.session.get("_keep_renderer", False):')
     module.write_text(source, encoding="utf-8")
-    for patched in (bootstrap, main, module):
+    core = engine / "display" / "core.py"
+    source = core.read_text(encoding="utf-8")
+    quit_handler = re.compile(r"^( +)def quit_event\(self\)(?: *-> *None)?:[ \t]*$", re.M)
+
+    def handle_confirmed_exit(match):
+        indent = match[1] + "    "
+        return (match[0] + "\n" + indent + "import renios_runtime\n"
+                + indent + "if renios_runtime.consume_confirmed_exit():\n"
+                + indent + "    renpy.exports.quit()")
+
+    source, count = quit_handler.subn(handle_confirmed_exit, source)
+    if count != 1:
+        raise ValueError("Expected one Ren’Py quit event handler")
+    core.write_text(source, encoding="utf-8")
+
+    for patched in (bootstrap, main, module, core):
         for suffix in (".pyc", ".pyo"):
             patched.with_suffix(suffix).unlink(missing_ok=True)
         cache = patched.parent / "__pycache__"

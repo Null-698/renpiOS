@@ -80,6 +80,16 @@ def play():
                 sys.modules.pop(name, None)
 
 
+def consume_confirmed_exit():
+    """Consume the launcher’s one-shot confirmation for the current game."""
+    marker = os.path.join(sys.argv[1], ".renios-confirmed-exit")
+    try:
+        os.remove(marker)
+    except OSError:
+        return False
+    return True
+
+
 def record_metadata(renpy):
     """Read the values evaluated by Ren'Py, including projects stored in RPA archives."""
     import json
