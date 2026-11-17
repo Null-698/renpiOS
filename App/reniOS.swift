@@ -51,6 +51,7 @@ final class Session {
             previewName = arguments.first
             previewOpen = arguments.contains("landscape-open")
             previewLandscape = previewOpen || arguments.contains("landscape") || arguments.contains("landscape-options")
+                || arguments.contains(where: { $0.hasPrefix("landscape-return") }) || arguments.contains("landscape-insights")
             previewTab = arguments.compactMap(GameTab.init(rawValue:)).first
             if novels.isEmpty {
                 do {
@@ -71,7 +72,7 @@ final class Session {
                     NSLog("reniOS carousel preview: %@", error.localizedDescription)
                 }
             }
-            if arguments.contains("Insights"), let game = novels.first {
+            if arguments.contains("Insights") || arguments.contains("landscape-insights"), let game = novels.first {
                 var history = PlayHistory()
                 for offset in [0, -1, -2, -5, -6, -7, -8] {
                     let date = Date.now.addingTimeInterval(Double(offset) * 86400)
@@ -479,6 +480,7 @@ private struct LibraryScreen: View {
     let previewLandscape: Bool
     @State private var importing = false
     @State private var filter = ""
+    @State private var searchExpanded = false
     @State private var selected: Novel?
     @State private var selectedTab: GameTab = .overview
     @State private var showingImportReview = false
@@ -523,36 +525,20 @@ private struct LibraryScreen: View {
             let feature = games.first(where: { $0.id == highlightedID }) ?? games.first
             let inlineGame = wide ? selected : nil
             let backdropGame = inlineGame ?? feature
-            VStack(spacing: 0) {
-                if inlineGame == nil {
-                    header(wide: wide)
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, wide ? 9 : 13)
-                }
+            ZStack {
+                launcher(wide: wide, games: games, feature: feature)
+                    .opacity(inlineGame == nil ? 1 : 0)
+                    .allowsHitTesting(inlineGame == nil)
+                    .accessibilityHidden(inlineGame != nil)
+                    .zIndex(0)
                 if let inlineGame {
                     NovelSheet(novel: inlineGame, session: session, initialTab: selectedTab, namespace: optionsMotion,
-                               close: { withAnimation(carouselMotion) { selected = nil } }) { game in
+                               close: closeOptions) { game in
                         session.launch(game)
                     }
                     .id(inlineGame.id)
                     .transition(.opacity)
-                } else if showingInsights {
-                    InsightsView(history: previewInsights ?? session.activity.history,
-                                 titles: Dictionary(uniqueKeysWithValues: session.novels.map { ($0.id, $0.title) }))
-                        .transition(.opacity)
-                } else if let feature {
-                    if wide && searching {
-                        landscapeSearchResults(games)
-                    } else if wide {
-                        landscape(feature: feature, games: games)
-                    } else {
-                        portrait(games: games)
-                    }
-                } else if session.novels.isEmpty {
-                    emptyLibrary
-                } else {
-                    ContentUnavailableView.search(text: filter)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .zIndex(1)
                 }
             }
             .frame(maxWidth: 1320)
@@ -562,6 +548,20 @@ private struct LibraryScreen: View {
                 guard let previewName, wide == previewLandscape else { return }
                 try? await Task.sleep(for: .milliseconds(850))
                 guard !Task.isCancelled else { return }
+                if previewName.hasPrefix("landscape-return") {
+                    let index = previewName.hasSuffix("second") ? 1 : 2
+                    guard session.novels.indices.contains(index) else { return }
+                    let game = session.novels[index]
+                    toggleCover(game)
+                    try? await Task.sleep(for: .milliseconds(650))
+                    guard !Task.isCancelled else { return }
+                    showOptions(game)
+                    try? await Task.sleep(for: .milliseconds(600))
+                    guard !Task.isCancelled else { return }
+                    closeOptions()
+                    try? await Task.sleep(for: .milliseconds(600))
+                    guard !Task.isCancelled else { return }
+                }
                 let marker = URL.cachesDirectory.appending(path: "renios-preview.txt")
                 try? Data(previewName.utf8).write(to: marker, options: .atomic)
             }
@@ -577,11 +577,8 @@ private struct LibraryScreen: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if inlineGame == nil { bottomDock(wide: wide) }
-            }
             .background {
-                if wide && !showingInsights && !searching, let coverAccent {
+                if wide && !showingInsights && !searchExpanded, let coverAccent {
                     RadialGradient(colors: [coverAccent.opacity(0.22), .clear], center: .center,
                                    startRadius: 0, endRadius: geometry.size.width * 0.75)
                         .ignoresSafeArea()
@@ -631,6 +628,37 @@ private struct LibraryScreen: View {
         }
     }
 
+    private func launcher(wide: Bool, games: [Novel], feature: Novel?) -> some View {
+        VStack(spacing: 0) {
+            header(wide: wide)
+                .padding(.horizontal, 20)
+                .padding(.bottom, wide ? 9 : 13)
+            if showingInsights {
+                InsightsView(history: previewInsights ?? session.activity.history,
+                             titles: Dictionary(uniqueKeysWithValues: session.novels.map { ($0.id, $0.title) }),
+                             wide: wide)
+                    .transition(.opacity)
+            } else if let feature {
+                if wide && searchExpanded {
+                    landscapeSearchResults(games)
+                } else if wide {
+                    landscape(feature: feature, games: games)
+                } else {
+                    portrait(games: games)
+                }
+            } else if session.novels.isEmpty {
+                emptyLibrary
+            } else {
+                ContentUnavailableView.search(text: filter)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            bottomDock(wide: wide)
+        }
+    }
+
     private func header(wide: Bool) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "book.closed.fill")
@@ -661,23 +689,55 @@ private struct LibraryScreen: View {
     }
 
     private func bottomDock(wide: Bool) -> some View {
-        Group {
-            if wide && !showingInsights {
-                HStack(spacing: 12) {
-                    searchDock(wide: true)
+        VStack(spacing: 8) {
+            if searchExpanded {
+                searchDock(wide: wide)
+                    .transition(.opacity)
+                    .task {
+                        await Task.yield()
+                        if !Task.isCancelled { searching = true }
+                    }
+            }
+            GlassEffectContainer(spacing: 10) {
+                HStack(spacing: 10) {
                     libraryTabs
-                }
-                .frame(maxWidth: 780)
-            } else {
-                VStack(spacing: 8) {
-                    if !showingInsights { searchDock(wide: false) }
-                    libraryTabs
+                    searchButton
+                    if wide && !showingInsights && !searchExpanded { importButton }
                 }
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity)
+    }
+
+    private var searchButton: some View {
+        Button {
+            if searchExpanded {
+                closeSearch()
+            } else {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
+                    showingInsights = false
+                    searchExpanded = true
+                }
+            }
+        } label: {
+            Image(systemName: searchExpanded ? "xmark" : "magnifyingglass")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(searchExpanded ? amber : cream)
+                .frame(width: 48, height: 48)
+                .glassEffect(.regular.interactive(), in: .circle)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(searchExpanded ? "Close Search" : "Search Games")
+    }
+
+    private func closeSearch() {
+        searching = false
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
+            searchExpanded = false
+            filter = ""
+        }
     }
 
     private var libraryTabs: some View {
@@ -692,7 +752,7 @@ private struct LibraryScreen: View {
     private func libraryTab(_ title: String, icon: String, insights: Bool) -> some View {
         let active = showingInsights == insights
         return Button {
-            searching = false
+            closeSearch()
             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { showingInsights = insights }
         } label: {
             VStack(spacing: 2) {
@@ -786,9 +846,11 @@ private struct LibraryScreen: View {
                     highlightedID = games.first?.id
                 }
             }
-            .onChange(of: highlightedID) { _, id in
-                if let openedID, openedID != id {
-                    withAnimation(carouselMotion) { self.openedID = nil }
+            .onScrollPhaseChange { _, phase in
+                // A programmatic snap can report another card while it is moving.
+                // Only direct scrolling dismisses an opened hinge.
+                if phase == .interacting && openedID != nil {
+                    withAnimation(carouselMotion) { openedID = nil }
                 }
             }
             .onChange(of: focusedGame) { _, id in
@@ -804,33 +866,14 @@ private struct LibraryScreen: View {
     private func carouselCard(_ game: Novel, selected: Bool, width: CGFloat, height: CGFloat) -> some View {
         let open = openedID == game.id
         let cover = Button {
-            withAnimation(carouselMotion) {
-                highlightedID = game.id
-                openedID = open ? nil : game.id
-            }
+            toggleCover(game)
         } label: {
-            CoverArt(url: game.cover, tint: carouselTint(game))
-                .overlay {
-                    LinearGradient(colors: [.clear, .black.opacity(0.84)], startPoint: .center, endPoint: .bottom)
-                }
-                .overlay(alignment: .bottomLeading) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(game.title)
-                            .font(.system(size: min(36, max(19, height * 0.18)), weight: .semibold, design: .serif))
-                            .lineLimit(2)
-                        gameVersions(game)
-                    }
-                    .foregroundStyle(cream)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 11)
-                }
-                .clipShape(.rect(cornerRadius: 19))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 19)
-                        .strokeBorder(selected ? amber.opacity(0.8) : .white.opacity(0.16), lineWidth: selected ? 2 : 1)
-                }
-                .matchedGeometryEffect(id: game.id, in: optionsMotion)
-                .contentShape(.rect(cornerRadius: 19))
+            let face = carouselFace(game, selected: selected, height: height)
+            if self.selected?.id == game.id || reduceMotion {
+                face
+            } else {
+                face.matchedGeometryEffect(id: game.id, in: optionsMotion)
+            }
         }
         .buttonStyle(.plain)
         .focused($focusedGame, equals: game.id)
@@ -873,8 +916,42 @@ private struct LibraryScreen: View {
         .frame(width: width, height: height)
     }
 
+    private func carouselFace(_ game: Novel, selected: Bool, height: CGFloat) -> some View {
+        CoverArt(url: game.cover, tint: carouselTint(game))
+            .overlay {
+                LinearGradient(colors: [.clear, .black.opacity(0.84)], startPoint: .center, endPoint: .bottom)
+            }
+            .overlay(alignment: .bottomLeading) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(game.title)
+                        .font(.system(size: min(36, max(19, height * 0.18)), weight: .semibold, design: .serif))
+                        .lineLimit(2)
+                    gameVersions(game)
+                }
+                .foregroundStyle(cream)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 11)
+            }
+            .clipShape(.rect(cornerRadius: 19))
+            .overlay {
+                RoundedRectangle(cornerRadius: 19)
+                    .strokeBorder(selected ? amber.opacity(0.8) : .white.opacity(0.16), lineWidth: selected ? 2 : 1)
+            }
+            .contentShape(.rect(cornerRadius: 19))
+    }
+
+    private func toggleCover(_ game: Novel) {
+        withAnimation(carouselMotion) {
+            highlightedID = game.id
+            openedID = openedID == game.id ? nil : game.id
+        }
+    }
+
     private func centerGame(_ id: Novel.ID) {
-        withAnimation(carouselMotion) { highlightedID = id }
+        withAnimation(carouselMotion) {
+            if openedID != id { openedID = nil }
+            highlightedID = id
+        }
     }
 
     private func carouselTint(_ game: Novel) -> Color {
@@ -1100,11 +1177,21 @@ private struct LibraryScreen: View {
     }
 
     private func showOptions(_ game: Novel, tab: GameTab = .overview) {
-        searching = false
+        closeSearch()
         selectedTab = tab
         withAnimation(wideLayout ? carouselMotion : nil) {
             if wideLayout { highlightedID = game.id }
             selected = game
+        }
+    }
+
+    private func closeOptions() {
+        guard let game = selected else { return }
+        withAnimation(carouselMotion) {
+            if session.novels.contains(where: { $0.id == game.id }) {
+                highlightedID = game.id
+            }
+            selected = nil
         }
     }
 

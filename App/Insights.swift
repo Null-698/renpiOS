@@ -145,6 +145,7 @@ final class PlayActivity: NSObject {
 struct InsightsView: View {
     let history: PlayHistory
     let titles: [UUID: String]
+    let wide: Bool
     @State private var selectedDay: String?
 
     var body: some View {
@@ -158,30 +159,47 @@ struct InsightsView: View {
                     if history.games.isEmpty {
                         ContentUnavailableView("No play time yet", systemImage: "chart.bar.xaxis",
                                                description: Text("Your activity appears after you play a game."))
+                    } else if wide {
+                        HStack(alignment: .top, spacing: 14) {
+                            summary(streaks: streaks, favorite: favorite)
+                                .frame(maxWidth: 355)
+                            busiestDays
+                                .frame(maxWidth: .infinity)
+                        }
                     } else {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 10)], spacing: 10) {
-                            metric("Games played", history.games.count.formatted(), "rectangle.on.rectangle")
-                            metric("Current streak", days(streaks.current), "flame")
-                            metric("Longest streak", days(streaks.longest), "trophy")
-                            metric("Longest session", duration(history.longestSession), "clock")
-                        }
-                        if let favorite {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text("Most played game").font(.subheadline).foregroundStyle(amber)
-                                Text(titles[favorite.key] ?? favorite.value.title)
-                                    .font(.system(.title2, design: .serif).weight(.semibold))
-                                Text(duration(favorite.value.seconds)).font(.subheadline.monospacedDigit())
-                            }
-                            .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                            .background(panel, in: .rect(cornerRadius: 16))
-                        }
+                        summary(streaks: streaks, favorite: favorite)
                         busiestDays
                     }
                 }
-                .frame(maxWidth: 780)
+                .frame(maxWidth: wide ? 1100 : 780)
                 .padding(.horizontal, 20)
                 .padding(.bottom, 16)
                 .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private func summary(streaks: (current: Int, longest: Int),
+                         favorite: (key: UUID, value: PlayHistory.Game)?) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            let columns = wide ? Array(repeating: GridItem(.flexible(), spacing: 10), count: 2)
+                : [GridItem(.adaptive(minimum: 145), spacing: 10)]
+            LazyVGrid(columns: columns, spacing: 10) {
+                metric("Games played", history.games.count.formatted(), "rectangle.on.rectangle")
+                metric("Current streak", days(streaks.current), "flame")
+                metric("Longest streak", days(streaks.longest), "trophy")
+                metric("Longest session", duration(history.longestSession), "clock")
+            }
+            if let favorite {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Most played game").font(.subheadline).foregroundStyle(amber)
+                    Text(titles[favorite.key] ?? favorite.value.title)
+                        .font(.system(.title2, design: .serif).weight(.semibold))
+                    Text(duration(favorite.value.seconds)).font(.subheadline.monospacedDigit())
+                }
+                .padding(wide ? 12 : 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(panel, in: .rect(cornerRadius: 16))
             }
         }
     }
@@ -232,7 +250,7 @@ struct InsightsView: View {
                 }
             }
             .chartXSelection(value: $selectedDay)
-            .frame(height: 152)
+            .frame(height: wide ? 174 : 152)
             .accessibilityLabel("Play time on your five busiest days")
         }
         .padding(16)
@@ -258,7 +276,7 @@ struct InsightsView: View {
             Text(value).font(.title3.monospacedDigit().weight(.semibold))
             Text(title).font(.caption).foregroundStyle(.secondary)
         }
-        .padding(13).frame(maxWidth: .infinity, alignment: .leading)
+        .padding(wide ? 10 : 13).frame(maxWidth: .infinity, alignment: .leading)
         .background(panel, in: .rect(cornerRadius: 13))
         .accessibilityElement(children: .combine)
     }
