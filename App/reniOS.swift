@@ -797,10 +797,10 @@ private struct LibraryScreen: View {
                         }
                     }
                 }
+                .searchable(text: $filter, isPresented: $searchPresented,
+                            placement: .navigationBarDrawer(displayMode: .always), prompt: "Search games")
             }
         }
-        .searchable(text: $filter, isPresented: $searchPresented,
-                    placement: .navigationBarDrawer(displayMode: .always), prompt: "Search games")
         .onChange(of: libraryTab) { _, tab in
             searchPresented = tab == .search
         }
