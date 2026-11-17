@@ -139,7 +139,11 @@ struct AppSettingsView: View {
                     Text("Expands the game image to remove engine-generated black borders. This stretches the image to fit your screen. Borders drawn inside a game’s artwork may remain. Applies when you next launch a game.")
                 }
                 Section {
-                    NavigationLink("Quick Guide", systemImage: "questionmark.circle") { QuickGuide() }
+                    NavigationLink {
+                        QuickGuide()
+                    } label: {
+                        Label("Quick Guide", systemImage: "questionmark.circle")
+                    }
                     Button("Submit Bug or Feature Request", systemImage: "bubble.left.and.bubble.right") {}
                         .disabled(true)
                 } header: { Text("Help") } footer: {
