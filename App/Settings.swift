@@ -177,7 +177,7 @@ private struct QuickGuide: View {
             }
             Section("Make reniOS Yours") {
                 Text("Appearance changes the library theme and accent. Library settings control recent games, layout, and thumbnails. Insights tracks active foreground play time and can be paused. Fill Screen stretches a game to use the display.")
-                Text("Find Cover offers an exact catalog match or private in-app browsing. Open an image and use it as the cover, or select an image you already have with Choose Cover.")
+                Text("Find Cover offers an exact catalog match or private in-app browsing. Tap an image and use it as the cover, or select an image you already have with Choose Cover.")
             }
         }
         .navigationTitle("Quick Guide")

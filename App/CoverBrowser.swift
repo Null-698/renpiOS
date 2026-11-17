@@ -3,6 +3,16 @@ import WebKit
 import ImageIO
 
 @MainActor
+private final class CoverImageMessages: NSObject, WKScriptMessageHandler {
+    weak var owner: CoverWebSession?
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let value = message.body as? String, let url = URL(string: value),
+              ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return }
+        owner?.imageURL = url
+    }
+}
+
+@MainActor
 @Observable
 final class CoverWebSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     let web: WKWebView
@@ -21,6 +31,19 @@ final class CoverWebSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         super.init()
         web.navigationDelegate = self
         web.uiDelegate = self
+        let messages = CoverImageMessages()
+        messages.owner = self
+        configuration.userContentController.add(messages, name: "reniosCoverImage")
+        let source = """
+        document.addEventListener('click', function(event) {
+            var image = event.target.closest('img');
+            if (image && (image.currentSrc || image.src)) {
+                window.webkit.messageHandlers.reniosCoverImage.postMessage(image.currentSrc || image.src);
+            }
+        }, true);
+        """
+        configuration.userContentController.addUserScript(WKUserScript(source: source,
+            injectionTime: .atDocumentEnd, forMainFrameOnly: false))
         web.load(URLRequest(url: url))
     }
 

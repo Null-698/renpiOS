@@ -149,7 +149,7 @@ struct CoverFinder: View {
                     if let googleImages {
                         Button("Browse for a Cover", systemImage: "globe") { browser = BrowserDestination(url: googleImages) }
                             .buttonStyle(.glass)
-                        Text("Private in-app browsing. Open the image you want, then tap Use Image.")
+                        Text("Private in-app browsing. Tap the image you want, then Use Image to preview it.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
