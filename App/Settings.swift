@@ -335,26 +335,35 @@ private struct ThemeGallery: View {
                     Button {
                         ThemeSelection.shared.current = theme
                     } label: {
-                        ZStack(alignment: .bottomLeading) {
-                            theme.canvas
-                            if let name = theme.artwork {
-                                Color.clear.overlay { Image(name).resizable().scaledToFill() }.clipped()
-                            } else {
-                                LinearGradient(colors: [.black, Color.brown.opacity(0.58)],
-                                               startPoint: .bottomLeading, endPoint: .topTrailing)
+                        HStack {
+                            Text(theme.title).font(.system(.title2, design: .serif).weight(.semibold))
+                            Spacer()
+                            if theme == ThemeSelection.shared.current {
+                                Image(systemName: "checkmark.circle.fill")
                             }
-                            LinearGradient(colors: [.clear, .black.opacity(0.85)], startPoint: .top, endPoint: .bottom)
-                            HStack {
-                                Text(theme.title).font(.system(.title2, design: .serif).weight(.semibold))
-                                Spacer()
-                                if theme == ThemeSelection.shared.current {
-                                    Image(systemName: "checkmark.circle.fill")
-                                }
-                            }.foregroundStyle(.white).padding(16)
                         }
-                        .frame(height: 130).clipped().clipShape(.rect(cornerRadius: 16))
+                        .foregroundStyle(.white)
+                        .padding(16)
+                        .frame(maxWidth: .infinity, minHeight: 130, alignment: .bottomLeading)
+                        .background {
+                            ZStack {
+                                if let name = theme.artwork {
+                                    Image(name).resizable().scaledToFill()
+                                } else {
+                                    LinearGradient(colors: [.black, .brown.opacity(0.58)],
+                                                   startPoint: .bottomLeading, endPoint: .topTrailing)
+                                }
+                                LinearGradient(colors: [.clear, .black.opacity(0.85)],
+                                               startPoint: .top, endPoint: .bottom)
+                            }
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                        }
+                        .clipShape(.rect(cornerRadius: 16))
+                        .contentShape(.interaction, RoundedRectangle(cornerRadius: 16))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(theme.title)
                     .accessibilityAddTraits(theme == ThemeSelection.shared.current ? .isSelected : [])
                 }
             }.padding()
