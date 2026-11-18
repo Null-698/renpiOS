@@ -15,7 +15,7 @@ enum LibraryTheme: String, CaseIterable, Identifiable {
         switch self {
         case .standard: nil
         case .observatory: "Observatory"
-        case .tide: "Tide"
+        case .tide: nil
         }
     }
 
@@ -25,6 +25,10 @@ enum LibraryTheme: String, CaseIterable, Identifiable {
             return UIColor(red: CGFloat(n >> 16 & 255) / 255, green: CGFloat(n >> 8 & 255) / 255,
                            blue: CGFloat(n & 255) / 255, alpha: 1)
         })
+    }
+    static var tideGradient: LinearGradient {
+        LinearGradient(colors: [color(0x10152c, 0xeef1fc), color(0x303157, 0xd5d2ee), color(0x174046, 0xc5e9df)],
+                       startPoint: .topLeading, endPoint: .bottomTrailing)
     }
     var canvas: Color {
         switch self {
@@ -197,7 +201,7 @@ struct AppSettingsView: View {
             switch page {
             case .appearance: keywords = "custom themes gilded observatory midnight tide default dark light system accent color reset"
             case .insights: keywords = "enable disable tracking history streak play time"
-            case .library: keywords = "show last played recent cover thumbnails layout grid list sort"
+            case .library: keywords = "show last played recent cover thumbnails layout grid list sort lock hide hidden privacy face id passcode"
             case .controls: keywords = "opacity transparency horizontal vertical row separate buttons drag"
             case .help: keywords = "guide import apk windows zip diagnostics crash saves mods backups patches"
             }
@@ -238,6 +242,8 @@ private struct SettingsPage: View {
     @AppStorage("accentBlue") private var blue = 0.48
     @AppStorage("insightsEnabled") private var insightsEnabled = true
     @AppStorage("showRecentGame") private var showRecent = true
+    @AppStorage("allowGameLock") private var allowLock = true
+    @AppStorage("allowGameHide") private var allowHide = true
     @AppStorage("libraryList") private var libraryList = false
     @AppStorage("showThumbnails") private var thumbnails = true
     @AppStorage("librarySort") private var sort = LibrarySort.recent.rawValue
@@ -303,6 +309,12 @@ private struct SettingsPage: View {
                     ForEach(LibrarySort.allCases) { Text($0.label).tag($0.rawValue) }
                 }
             }
+            Section("Privacy") {
+                Toggle("Allow Locking Games", isOn: $allowLock)
+                Toggle("Allow Hiding Games", isOn: $allowHide)
+                Text("Hold a cover to lock or hide a game. Swipe down at the top of Library to open Hidden Games. Turning these options off keeps existing games protected.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
         case .controls:
             Section {
                 Picker("Controls Layout", selection: $controlsLayout) {
@@ -347,7 +359,8 @@ private struct ThemeGallery: View {
                         .frame(maxWidth: .infinity, minHeight: 130, alignment: .bottomLeading)
                         .background {
                             ZStack {
-                                if let name = theme.artwork {
+                                if theme == .tide { LibraryTheme.tideGradient }
+                                else if let name = theme.artwork {
                                     Image(name).resizable().scaledToFill()
                                 } else {
                                     LinearGradient(colors: [.black, .brown.opacity(0.58)],

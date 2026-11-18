@@ -14,6 +14,9 @@ struct Novel: Codable, Identifiable, Equatable, Sendable {
     var orientation: GameOrientation?
     var fillScreen: Bool?
     var layoutProfile: String?
+    var isHidden: Bool?
+    var isLocked: Bool?
+    var requiresAuthentication: Bool { isLocked == true || isHidden == true }
     var desktopPackage: Bool?
 
     var effectiveLayout: String {
@@ -381,7 +384,7 @@ enum LibraryStore {
                 if digest == nil, sharedID || similarFiles {
                     digest = try? GameMetadata.contentDigest(in: pristineGame(for: current))
                 }
-                if let digest, digest == novel.contentDigest { throw ImportFailure.duplicate(current.title) }
+                if let digest, digest == novel.contentDigest { throw ImportFailure.duplicate(current.isHidden == true ? "This game" : current.title) }
                 if sharedID { matchingGames.append(current) }
             }
             let installedIDs = Set(existing.map(\.id))

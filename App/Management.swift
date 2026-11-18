@@ -252,8 +252,6 @@ struct BackupManager: View {
     let session: Session
     @State private var entries: [Entry] = []
     @State private var choosing = false
-    @State private var actions = false
-    @State private var restoring: LibraryStore.SaveArchive?
     @State private var message: String?
 
     private struct Entry: Identifiable {
@@ -266,24 +264,25 @@ struct BackupManager: View {
     var body: some View {
         ManagementCollection(isEmpty: entries.isEmpty, emptyTitle: "No backups yet", emptyIcon: "archivebox",
                              actionTitle: "Backup Actions", actionIcon: "plus", working: session.isImporting,
-                             message: message, action: { actions = true }) {
+                             message: message, action: create, importBackup: { choosing = true }) {
             ForEach(entries) { entry in
-                HStack(spacing: 10) {
-                    Button {
-                        restoring = entry.archive
-                    } label: {
-                        archiveRow(entry.imported ? entry.archive.url.lastPathComponent : "Save Backup",
-                                   icon: entry.imported ? "doc.zipper" : "archivebox",
-                                   archive: entry.archive, action: "arrow.down.to.line")
+                VStack(alignment: .leading, spacing: 4) {
+                    archiveRow(entry.imported ? entry.archive.url.lastPathComponent : "Save Backup",
+                               icon: entry.imported ? "doc.zipper" : "archivebox", archive: entry.archive)
+                    HStack(spacing: 14) {
+                        Menu {
+                            Button("Keep Existing Saves") { restore(entry.archive, replacing: false) }
+                            Button("Replace Matching Saves", role: .destructive) { restore(entry.archive, replacing: true) }
+                        } label: {
+                            Label("Restore", systemImage: "arrow.down.to.line")
+                                .frame(maxWidth: .infinity, minHeight: 44).contentShape(.rect)
+                        }
+                        ShareLink(item: entry.archive.url) {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                                .frame(maxWidth: .infinity, minHeight: 44).contentShape(.rect)
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityHint("Restore saves from this backup")
-                    ShareLink(item: entry.archive.url) {
-                        Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 18, weight: .medium))
-                            .frame(width: 40, height: 44)
-                    }
-                    .accessibilityLabel("Share Backup")
+                    .buttonStyle(.borderless)
                 }
                 .managementRow()
                 .disabled(session.isImporting)
@@ -299,24 +298,13 @@ struct BackupManager: View {
             }
         }
         .onAppear { refresh() }
-        .confirmationDialog("Backups", isPresented: $actions, titleVisibility: .visible) {
-            Button("Create Backup") { create() }
-            Button("Import Backup ZIP") { choosing = true }
-        }
         .fileImporter(isPresented: $choosing, allowedContentTypes: [.zip], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let files): keep(files)
             case .failure(let error): message = error.localizedDescription
             }
         }
-        .confirmationDialog("Restore saves?", isPresented: Binding(
-            get: { restoring != nil }, set: { if !$0 { restoring = nil } }
-        ), titleVisibility: .visible, presenting: restoring) { archive in
-            Button("Keep Existing Saves") { restore(archive, replacing: false) }
-            Button("Replace Matching Saves", role: .destructive) { restore(archive, replacing: true) }
-        } message: { archive in
-            Text(archive.date.formatted(date: .abbreviated, time: .shortened))
-        }
+
     }
 
     private func refresh() {
@@ -352,7 +340,6 @@ struct BackupManager: View {
     }
 
     private func restore(_ archive: LibraryStore.SaveArchive, replacing: Bool) {
-        restoring = nil
         message = nil
         Task {
             do {
@@ -373,6 +360,7 @@ private struct ManagementCollection<Rows: View>: View {
     let working: Bool
     let message: String?
     let action: () -> Void
+    var importBackup: (() -> Void)? = nil
     @ViewBuilder let rows: () -> Rows
 
     var body: some View {
@@ -405,14 +393,15 @@ private struct ManagementCollection<Rows: View>: View {
                     .padding(.bottom, 14)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Button(action: action) {
-                Group {
-                    if working { ProgressView().tint(amber) }
-                    else { Image(systemName: actionIcon).font(.system(size: 23, weight: .semibold)) }
+            Group {
+                if let importBackup {
+                    Menu {
+                        Button("Create Backup", systemImage: "archivebox", action: action)
+                        Button("Import Backup ZIP", systemImage: "square.and.arrow.down", action: importBackup)
+                    } label: { actionLabel }
+                } else {
+                    Button(action: action) { actionLabel }
                 }
-                .foregroundStyle(cream)
-                .frame(width: 58, height: 58)
-                .glassEffect(.regular.tint(amber.opacity(0.32)).interactive(), in: .circle)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(actionTitle)
@@ -421,6 +410,16 @@ private struct ManagementCollection<Rows: View>: View {
             .padding([.trailing, .bottom], 10)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: isEmpty)
+    }
+
+    private var actionLabel: some View {
+        Group {
+            if working { ProgressView().tint(amber) }
+            else { Image(systemName: actionIcon).font(.system(size: 23, weight: .semibold)) }
+        }
+        .foregroundStyle(cream)
+        .frame(width: 58, height: 58)
+        .glassEffect(.regular.tint(amber.opacity(0.32)).interactive(), in: .circle)
     }
 }
 
@@ -450,7 +449,7 @@ private func managementIcon(_ icon: String) -> some View {
 }
 
 @MainActor
-private func archiveRow(_ title: String, icon: String, archive: LibraryStore.SaveArchive, action: String) -> some View {
+private func archiveRow(_ title: String, icon: String, archive: LibraryStore.SaveArchive) -> some View {
     HStack(spacing: 12) {
         managementIcon(icon)
         VStack(alignment: .leading, spacing: 4) {
@@ -459,7 +458,6 @@ private func archiveRow(_ title: String, icon: String, archive: LibraryStore.Sav
                 .font(.caption).foregroundStyle(.secondary)
         }
         Spacer()
-        Image(systemName: action).foregroundStyle(amber).accessibilityHidden(true)
     }
 }
 

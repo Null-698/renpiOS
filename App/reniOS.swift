@@ -1,3 +1,4 @@
+import LocalAuthentication
 import UIKit
 import ImageIO
 import SwiftUI
@@ -131,9 +132,34 @@ final class Session {
         }
     }
 
+    private var authenticating = false
+
+    func authenticate(_ reason: String) async -> Bool {
+        guard !authenticating else { return false }
+        authenticating = true
+        defer { authenticating = false }
+        do {
+            return try await LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
+        } catch {
+            let code = (error as NSError).code
+            if ![LAError.Code.userCancel, .systemCancel, .appCancel].contains(where: { $0.rawValue == code }) {
+                message = error.localizedDescription
+            }
+            return false
+        }
+    }
+
     func launch(_ novel: Novel) {
-        guard !isImporting else { return }
-        pending = novel
+        guard !isImporting, let game = novels.first(where: { $0.id == novel.id }) else { return }
+        if game.requiresAuthentication {
+            Task {
+                guard await authenticate("Unlock this game to play."), !isImporting,
+                      let current = novels.first(where: { $0.id == game.id }) else { return }
+                pending = current
+            }
+        } else {
+            pending = game
+        }
     }
 
     func update(_ novel: Novel) {
@@ -163,6 +189,13 @@ final class Session {
                     let plan = try await Task.detached(priority: .userInitiated) {
                         try LibraryStore.prepareImport(source)
                     }.value
+                    if plan.matchingGames.contains(where: { $0.requiresAuthentication }) {
+                        guard await authenticate("Review an import matching a protected game.") else {
+                            LibraryStore.discardImport(plan)
+                            isImporting = false
+                            return
+                        }
+                    }
                     if plan.needsReview {
                         importReview = plan
                         return
@@ -263,7 +296,9 @@ final class Session {
         let fillScreen = novel.fillScreen ?? false
         let configuration: [String: Any] = ["fill": fillScreen, "layout": novel.effectiveLayout]
         try JSONSerialization.data(withJSONObject: configuration).write(to: displayConfiguration, options: .atomic)
-        let overlay = makeGameOverlay()
+        let request = novel.root.appending(path: ".renios-layout-request")
+        if FileManager.default.fileExists(atPath: request.path) { try FileManager.default.removeItem(at: request) }
+        let overlay = makeGameOverlay(novel: novel, request: request)
         activity.begin(novel)
         defer {
             activity.finish()
@@ -290,7 +325,7 @@ final class Session {
         return UIWindow(frame: UIScreen.main.bounds)
     }
 
-    private func makeGameOverlay() -> UIWindow {
+    private func makeGameOverlay(novel: Novel, request: URL) -> UIWindow {
         let overlay: TouchThroughWindow
         if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
             overlay = TouchThroughWindow(windowScene: scene)
@@ -300,6 +335,14 @@ final class Session {
         }
         overlay.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.alert.rawValue - 1)
         let controls = PlaybackControlsController()
+        controls.currentLayout = novel.layoutProfile ?? "auto"
+        controls.changeLayout = { [weak self] profile in
+            guard let self, var game = novels.first(where: { $0.id == novel.id }) else { throw CocoaError(.fileNoSuchFile) }
+            game.layoutProfile = profile
+            try LibraryStore.update(game)
+            novels = LibraryStore.list()
+            try Data(game.effectiveLayout.utf8).write(to: request, options: .atomic)
+        }
         overlay.rootViewController = controls
         controls.loadViewIfNeeded()
         overlay.touchTargets = [controls.handle, controls.bar] + controls.independentButtons
@@ -322,6 +365,8 @@ private final class TouchThroughWindow: UIWindow {
 
 @MainActor
 private final class PlaybackControlsController: UIViewController {
+    var currentLayout = "auto"
+    var changeLayout: ((String) throws -> Void)?
     let handle = UIButton(type: .system)
     let bar = UIStackView()
     private(set) var independentButtons: [UIButton] = []
@@ -355,6 +400,8 @@ private final class PlaybackControlsController: UIViewController {
         bar.addArrangedSubview(button("Skip", "forward.end.fill") { renios_playback_key(43, 9) })
         bar.addArrangedSubview(button("Game Settings", "gearshape") { renios_playback_key(41, 27) })
         bar.addArrangedSubview(button("Show or Hide Keyboard", "keyboard") { renios_toggle_keyboard() })
+        let layoutButton = button("Game Layout", "rectangle.3.group") { [weak self] in self?.chooseLayout() }
+        bar.addArrangedSubview(layoutButton)
         bar.addArrangedSubview(button("Close Game", "power", tint: .systemOrange) { [weak self] in
             self?.confirmExit()
         })
@@ -396,6 +443,29 @@ private final class PlaybackControlsController: UIViewController {
     }
 
     private var available: CGRect { view.bounds }
+
+    private func chooseLayout() {
+        let picker = UIAlertController(title: "Game Layout", message: nil, preferredStyle: .actionSheet)
+        for (key, label) in [("auto", "Auto"), ("desktop", "Desktop"), ("phone", "Phone"),
+                             ("tablet", "Tablet"), ("device", "Device Default")] {
+            picker.addAction(UIAlertAction(title: currentLayout == key ? "✓ " + label : label, style: .default) { [weak self] _ in
+                guard let self else { return }
+                do {
+                    try changeLayout?(key)
+                    currentLayout = key
+                } catch {
+                    let alert = UIAlertController(title: "Game Layout", message: error.localizedDescription, preferredStyle: .alert)
+                    alert.addAction(UIAlertAction(title: "OK", style: .default))
+                    present(alert, animated: true)
+                }
+            })
+        }
+        picker.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        let source = (bar.arrangedSubviews + independentButtons).first { $0.accessibilityLabel == "Game Layout" } ?? handle
+        picker.popoverPresentationController?.sourceView = source
+        picker.popoverPresentationController?.sourceRect = source.bounds
+        present(picker, animated: true)
+    }
 
     private func confirmExit() {
         guard presentedViewController == nil else { return }
@@ -559,6 +629,10 @@ private struct LibraryScreen: View {
     @AppStorage("showThumbnails") private var showThumbnails = true
     @AppStorage("libraryList") private var libraryList = false
     @AppStorage("librarySort") private var sortKey = LibrarySort.recent.rawValue
+    @AppStorage("allowGameLock") private var allowLock = true
+    @AppStorage("allowGameHide") private var allowHide = true
+    @State private var viewingHidden = false
+    @State private var deletion: Novel?
     @State private var importing = false
     @State private var filter = ""
     @State private var searchPresented = false
@@ -595,7 +669,7 @@ private struct LibraryScreen: View {
     }
 
     private var sortedNovels: [Novel] {
-        (LibrarySort(rawValue: sortKey) ?? .recent).sorted(session.novels, history: session.activity.history)
+        (LibrarySort(rawValue: sortKey) ?? .recent).sorted(session.novels.filter { ($0.isHidden == true) == (viewingHidden && libraryTab == .library) }, history: session.activity.history)
     }
 
     private var visibleNovels: [Novel] {
@@ -683,6 +757,22 @@ private struct LibraryScreen: View {
         .background(ink.ignoresSafeArea())
         .preferredColorScheme(AppStyle.theme)
         .tint(amber)
+        .onChange(of: libraryTab) { _, tab in
+            if tab != .library { viewingHidden = false }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            viewingHidden = false
+            if selected?.requiresAuthentication == true { selected = nil }
+            gameToLaunch = nil
+            deletion = nil
+            openedID = nil
+        }
+        .alert("Delete Game?", isPresented: Binding(get: { deletion != nil }, set: { if !$0 { deletion = nil } }),
+               presenting: deletion) { game in
+            Button("Delete Game, Keep Saves", role: .destructive) { session.delete(game, keepingSaves: true) }
+            Button("Delete Game and Saves", role: .destructive) { session.delete(game, keepingSaves: false) }
+            Button("Cancel", role: .cancel) {}
+        } message: { game in Text(game.title) }
         .onChange(of: insightsEnabled) { _, enabled in
             if !enabled && libraryTab == .insights { libraryTab = .library }
         }
@@ -737,7 +827,7 @@ private struct LibraryScreen: View {
                             if ThemeSelection.shared.current == .tide { tideLauncher(feature: feature, games: games) }
                             else { landscape(feature: feature, games: games) }
                         } else {
-                            portrait(games: games)
+                            portrait(games: games).refreshable { await openHidden() }
                         }
                     } else {
                         emptyLibrary
@@ -745,13 +835,21 @@ private struct LibraryScreen: View {
                 }
                 .frame(maxHeight: .infinity, alignment: .top)
                 .background(ink)
+                .contentShape(.rect)
+                .simultaneousGesture(DragGesture(minimumDistance: 28).onEnded { value in
+                    if (wide || games.isEmpty), value.translation.height > 58,
+                       value.translation.height > abs(value.translation.width) * 1.5 {
+                        Task { await openHidden() }
+                    }
+                }, isEnabled: wide || games.isEmpty)
+                .accessibilityAction(named: "Open Hidden Games") { Task { await openHidden() } }
             }
 
             if insightsEnabled {
                 Tab("Insights", systemImage: "chart.bar.xaxis", value: .insights) {
                     VStack(spacing: 0) {
                         header("Insights")
-                        InsightsView(history: previewInsights ?? session.activity.history,
+                        InsightsView(history: visibleHistory,
                                      titles: Dictionary(uniqueKeysWithValues: games.map { ($0.id, $0.title) }),
                                      wide: wide)
                             .id(appearance)
@@ -798,6 +896,53 @@ private struct LibraryScreen: View {
         .tabViewSearchActivation(.searchTabSelection)
     }
 
+    private var visibleHistory: PlayHistory {
+        var history = previewInsights ?? session.activity.history
+        for game in session.novels where game.isHidden == true { history.games.removeValue(forKey: game.id) }
+        return history
+    }
+
+    private func openHidden() async {
+        guard libraryTab == .library, !viewingHidden, selected == nil,
+              session.novels.contains(where: { $0.isHidden == true }),
+              await session.authenticate("Open your hidden games."), libraryTab == .library else { return }
+        openedID = nil
+        viewingHidden = true
+    }
+
+    @ViewBuilder private func gameActions(_ game: Novel) -> some View {
+        if allowLock || game.isLocked == true {
+            Button(game.isLocked == true ? "Unlock Game" : "Lock Game", systemImage: "lock") {
+                changeProtection(game, hiding: false)
+            }
+        }
+        if allowHide || game.isHidden == true {
+            Button(game.isHidden == true ? "Unhide Game" : "Hide Game", systemImage: "eye.slash") {
+                changeProtection(game, hiding: true)
+            }
+        }
+        Button("Delete Game", systemImage: "trash", role: .destructive) {
+            Task {
+                if game.requiresAuthentication {
+                    guard await session.authenticate("Manage this protected game.") else { return }
+                }
+                deletion = game
+            }
+        }
+    }
+
+    private func changeProtection(_ game: Novel, hiding: Bool) {
+        Task {
+            guard await session.authenticate("Change privacy for this game."),
+                  var current = session.novels.first(where: { $0.id == game.id }) else { return }
+            if hiding { current.isHidden = current.isHidden != true }
+            else { current.isLocked = current.isLocked != true }
+            session.update(current)
+            openedID = nil
+            if viewingHidden && !session.novels.contains(where: { $0.isHidden == true }) { viewingHidden = false }
+        }
+    }
+
     private func header(_ title: String, showsImport: Bool = false) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "book.closed.fill")
@@ -809,14 +954,18 @@ private struct LibraryScreen: View {
             Text("reniOS")
                 .font(ThemeSelection.shared.current == .standard ? .subheadline.monospaced().weight(.semibold) : .system(.title3, design: .serif).weight(.semibold))
                 .foregroundStyle(cream)
-            Rectangle()
-                .fill(.primary.opacity(0.15))
-                .frame(width: 1, height: 15)
-                .accessibilityHidden(true)
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .accessibilityAddTraits(.isHeader)
+            if showsImport && viewingHidden {
+                Button("Hidden Games", systemImage: "chevron.backward") { viewingHidden = false; openedID = nil }
+            } else if !showsImport {
+                Rectangle()
+                    .fill(.primary.opacity(0.15))
+                    .frame(width: 1, height: 15)
+                    .accessibilityHidden(true)
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityAddTraits(.isHeader)
+            }
             Spacer()
             if session.isImporting {
                 ProgressView()
@@ -875,6 +1024,7 @@ private struct LibraryScreen: View {
                                 .contentShape(.rect)
                         }
                         .buttonStyle(.plain)
+                        .contextMenu { gameActions(game) }.disabled(session.isImporting)
                         .accessibilityLabel(game.title)
                         .accessibilityAddTraits(offset == 0 ? .isSelected : [])
                         .rotationEffect(.degrees(angle))
@@ -902,8 +1052,7 @@ private struct LibraryScreen: View {
                 }
             }
             .background {
-                Image("Tide").resizable().scaledToFill().opacity(0.18).allowsHitTesting(false)
-                    .frame(width: geo.size.width, height: geo.size.height).clipped()
+                LibraryTheme.tideGradient.ignoresSafeArea().allowsHitTesting(false)
             }
         }
     }
@@ -1004,6 +1153,7 @@ private struct LibraryScreen: View {
             }
         }
         .buttonStyle(.plain)
+        .contextMenu { gameActions(game) }.disabled(session.isImporting)
         .focused($focusedGame, equals: game.id)
         .accessibilityLabel(game.title)
         .accessibilityHint(open ? "Hide game actions" : "Show game actions")
@@ -1164,7 +1314,7 @@ private struct LibraryScreen: View {
             LazyVStack(spacing: 3) {
                 ForEach(games) { game in
                     Button { showOptions(game) } label: { gameRow(game, highlighted: false) }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.plain).contextMenu { gameActions(game) }.disabled(session.isImporting)
                 }
             }
             .padding(.horizontal, 20)
@@ -1186,20 +1336,15 @@ private struct LibraryScreen: View {
                         Button { showOptions(feature) } label: {
                             featureCard(feature, compact: false).frame(minHeight: ThemeSelection.shared.current == .standard ? 238 : 300).themeCase(19)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.plain).contextMenu { gameActions(feature) }.disabled(session.isImporting)
                         .accessibilityLabel("Open options for \(feature.title)")
                     }
-                }
-                HStack {
-                    Text("Games").font(.headline).accessibilityAddTraits(.isHeader)
-                    Spacer()
-                    Text(games.count.formatted()).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 if libraryList {
                     LazyVStack(spacing: 6) {
                         ForEach(games) { game in
                             Button { showOptions(game) } label: { gameRow(game, highlighted: false) }
-                                .buttonStyle(.plain)
+                                .buttonStyle(.plain).contextMenu { gameActions(game) }.disabled(session.isImporting)
                         }
                     }
                 } else {
@@ -1225,7 +1370,7 @@ private struct LibraryScreen: View {
                                 .background(showThumbnails ? Color.clear : panel, in: .rect(cornerRadius: 12))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.plain).contextMenu { gameActions(game) }.disabled(session.isImporting)
                         }
                     }
                 }
@@ -1319,6 +1464,15 @@ private struct LibraryScreen: View {
     }
 
     private func showOptions(_ game: Novel, tab: GameTab = .overview) {
+        if game.requiresAuthentication {
+            Task {
+                guard await session.authenticate("Open options for this protected game.") else { return }
+                presentOptions(game, tab: tab)
+            }
+        } else { presentOptions(game, tab: tab) }
+    }
+
+    private func presentOptions(_ game: Novel, tab: GameTab) {
         searchPresented = false
         selectedTab = tab
         withAnimation(wideLayout ? carouselMotion : nil) {
@@ -1444,6 +1598,8 @@ private struct CoverArt: View {
             Group {
                 if let cover {
                     Image(uiImage: cover).resizable().scaledToFill()
+                } else if ThemeSelection.shared.current == .tide {
+                    LibraryTheme.tideGradient
                 } else if let name = ThemeSelection.shared.current.artwork {
                     Image(name).resizable().scaledToFill()
                 } else {

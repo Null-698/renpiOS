@@ -7,6 +7,9 @@ initialized = False
 entry = None
 usable = True
 
+LAYOUT_VARIANTS = {"desktop": "large pc touch", "phone": "small phone touch ios mobile",
+                   "tablet": "medium tablet touch ios mobile"}
+
 
 def finish(renpy):
     """Flush the current game and restore the engine's startup state."""
@@ -46,8 +49,7 @@ def play():
                 layout = json.load(source).get("layout")
         except (IOError, ValueError):
             layout = None
-        variants = {"desktop": "large pc touch", "phone": "small phone touch ios mobile",
-                    "tablet": "medium tablet touch ios mobile"}.get(layout)
+        variants = LAYOUT_VARIANTS.get(layout)
         if variants:
             os.environ["RENPY_VARIANT"] = variants
         if entry is None:
@@ -115,6 +117,54 @@ def configure_display(renpy):
         pass
 
 
+def install_layout_control(renpy, root):
+    import time
+    request = os.path.join(root, ".renios-layout-request")
+    last_check = [0]
+    clock = getattr(time, "monotonic", time.time)
+
+    def poll():
+        now = clock()
+        if 0 <= now - last_check[0] < 0.25:
+            return
+        last_check[0] = now
+        if not os.path.isfile(request):
+            return
+        try:
+            with open(request, "rb") as source:
+                profile = source.read(32).decode("ascii")
+            os.remove(request)
+            if profile == "device":
+                os.environ.pop("RENPY_VARIANT", None)
+            elif profile in LAYOUT_VARIANTS:
+                os.environ["RENPY_VARIANT"] = LAYOUT_VARIANTS[profile]
+            else:
+                return
+            renpy.main.choose_variants()
+            screens = renpy.display.screen
+            screens.predict_cache.clear()
+            for entries in renpy.exports.scene_lists().layers.values():
+                for entry in entries:
+                    screen = entry.displayable
+                    if isinstance(screen, screens.ScreenDisplayable):
+                        variant = screens.get_screen_variant(screen.screen_name[0])
+                        if variant is not None:
+                            screen.screen = variant
+                            screen.cache.clear()
+                            screen.use_cache.clear()
+            rebuild = getattr(getattr(renpy.store, "gui", None), "rebuild", None)
+            if rebuild:
+                rebuild()
+            renpy.exports.restart_interaction()
+        except Exception as error:
+            sys.stderr.write("reniOS live layout: {}\n".format(error))
+
+    callbacks = renpy.config.periodic_callbacks
+    callbacks[:] = [callback for callback in callbacks if not getattr(callback, "_renios_layout", False)]
+    poll._renios_layout = True
+    callbacks.append(poll)
+
+
 def record_metadata(renpy):
     """Read the values evaluated by Ren'Py, including projects stored in RPA archives."""
     import json
@@ -143,6 +193,7 @@ def record_metadata(renpy):
         return None
 
     configure_display(renpy)
+    install_layout_control(renpy, root)
     try:
         build = getattr(renpy.store, "build", None)
         active_mods = False
