@@ -132,14 +132,22 @@ final class Session {
         }
     }
 
-    private var authenticating = false
+    @ObservationIgnored private var authenticationContext: LAContext?
+
+    func cancelAuthentication() {
+        authenticationContext?.invalidate()
+        authenticationContext = nil
+        pending = nil
+    }
 
     func authenticate(_ reason: String) async -> Bool {
-        guard !authenticating else { return false }
-        authenticating = true
-        defer { authenticating = false }
+        guard authenticationContext == nil else { return false }
+        let context = LAContext()
+        authenticationContext = context
+        defer { if authenticationContext === context { authenticationContext = nil } }
         do {
-            return try await LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
+            let accepted = try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
+            return accepted && authenticationContext === context
         } catch {
             let code = (error as NSError).code
             if ![LAError.Code.userCancel, .systemCancel, .appCancel].contains(where: { $0.rawValue == code }) {
@@ -414,10 +422,12 @@ private final class PlaybackControlsController: UIViewController {
                     constraint.isActive = false
                 }
                 button.translatesAutoresizingMaskIntoConstraints = true
-                button.tag = index
-                let values = UserDefaults.standard.array(forKey: "controlPosition-\(index)") as? [Double]
+                // Keep the power button at its saved position after adding Game Layout.
+                let positionKey = index == 5 ? 6 : index == 6 ? 5 : index
+                button.tag = positionKey
+                let values = UserDefaults.standard.array(forKey: "controlPosition-\(positionKey)") as? [Double]
                 if let values, values.count == 2, values.allSatisfy({ $0.isFinite && (0...1).contains($0) }) {
-                    independentPositions[index] = CGPoint(x: values[0], y: values[1])
+                    independentPositions[positionKey] = CGPoint(x: values[0], y: values[1])
                 }
                 view.addSubview(button)
                 button.alpha = 0
@@ -761,6 +771,7 @@ private struct LibraryScreen: View {
             if tab != .library { viewingHidden = false }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            session.cancelAuthentication()
             viewingHidden = false
             if selected?.requiresAuthentication == true { selected = nil }
             gameToLaunch = nil
@@ -834,7 +845,10 @@ private struct LibraryScreen: View {
                     }
                 }
                 .frame(maxHeight: .infinity, alignment: .top)
-                .background(ink)
+                .background {
+                    if ThemeSelection.shared.current == .tide { LibraryTheme.tideGradient.ignoresSafeArea() }
+                    else { ink.ignoresSafeArea() }
+                }
                 .contentShape(.rect)
                 .simultaneousGesture(DragGesture(minimumDistance: 28).onEnded { value in
                     if (wide || games.isEmpty), value.translation.height > 58,
@@ -1050,9 +1064,6 @@ private struct LibraryScreen: View {
                 if edge == .leading || edge == .trailing {
                     moveCarousel(in: games, from: index, direction: edge == .leading ? -1 : 1)
                 }
-            }
-            .background {
-                LibraryTheme.tideGradient.ignoresSafeArea().allowsHitTesting(false)
             }
         }
     }
@@ -1998,7 +2009,7 @@ private struct NovelSheet: View {
                 ))
                 .disabled(session.isImporting)
             } footer: {
-                Text("Applies to this game on its next launch. Stretches the image to remove engine-generated borders. Borders in the artwork may remain.")
+                Text("Change Game Layout during play from the controls bar. Fill Screen stretches the image on the next launch.")
             }.listRowBackground(panel)
         }
         .scrollContentBackground(.hidden)
