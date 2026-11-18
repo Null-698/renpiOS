@@ -15,6 +15,8 @@ def finish(renpy):
     """Flush the current game and restore the engine's startup state."""
     global usable
     usable = False
+    if "renios_tools" in sys.modules:
+        sys.modules["renios_tools"].reset()
     renpy.display.tts.tts(None)
     for callback in getattr(renpy.config, "python_exit_callbacks", ()):
         callback()
@@ -120,6 +122,7 @@ def configure_display(renpy):
 def install_layout_control(renpy, root):
     import time
     request = os.path.join(root, ".renios-layout-request")
+    tools_request = os.path.join(root, ".renios-tools-request")
     last_check = [0]
     clock = getattr(time, "monotonic", time.time)
 
@@ -128,6 +131,17 @@ def install_layout_control(renpy, root):
         if 0 <= now - last_check[0] < 0.25:
             return
         last_check[0] = now
+        if os.path.isfile(tools_request):
+            try:
+                with open(tools_request, "rb") as source:
+                    mode = source.read(8).decode("ascii")
+                os.remove(tools_request)
+                if mode in ("mods", "tools"):
+                    import renios_tools
+                    renios_tools.open_panel(mode)
+            except Exception as error:
+                sys.stderr.write("reniOS game tools: {}\n".format(error))
+                renpy.exports.notify("Could not open game tools.")
         if not os.path.isfile(request):
             return
         try:

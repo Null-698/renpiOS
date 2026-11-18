@@ -214,6 +214,28 @@ struct AppSettingsView: View {
     init(initialPage: Page? = nil) { _path = State(initialValue: initialPage.map { [$0] } ?? []) }
 
     var body: some View {
+        GeometryReader { geometry in
+            if geometry.size.width >= 570 && geometry.size.width > geometry.size.height {
+                HStack(spacing: 0) {
+                    VStack(spacing: 4) {
+                        TextField("Search settings", text: $query)
+                            .textFieldStyle(.roundedBorder).padding(.horizontal, 12)
+                        List(matchingPages) { page in
+                            Button { path = [page] } label: {
+                                Label(page.rawValue, systemImage: page.icon)
+                                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
+                            }
+                            .listRowBackground((path.last ?? .appearance) == page ? amber.opacity(0.16) : panel)
+                        }.listStyle(.plain).scrollContentBackground(.hidden)
+                    }.frame(width: min(260, geometry.size.width * 0.32))
+                    Divider()
+                    NavigationStack { SettingsPage(page: path.last ?? .appearance).id(path.last ?? .appearance) }
+                }.background(ink)
+            } else { portraitSettings }
+        }
+    }
+
+    private var portraitSettings: some View {
         NavigationStack(path: $path) {
             List(matchingPages) { page in
                 NavigationLink(value: page) {
@@ -334,8 +356,29 @@ private struct SettingsPage: View {
             } footer: {
                 Text("Drag the handle or row to move it. With Separate Buttons, drag each control to its own position. Applies when you next launch a game.")
             }
+            Section("Visible Controls") {
+                ForEach([1, 2, 3, 4, 6, 7, 8, 5], id: \.self) { key in
+                    PlaybackVisibility(key: key)
+                }
+            }
         case .help: EmptyView()
         }
+    }
+}
+
+private struct PlaybackVisibility: View {
+    let key: Int
+    @AppStorage private var hidden: Bool
+
+    init(key: Int) {
+        self.key = key
+        _hidden = AppStorage(wrappedValue: false, "hidePlaybackControl-" + String(key))
+    }
+
+    var body: some View {
+        let titles = [1: "Previous", 2: "Skip", 3: "Game Settings", 4: "Keyboard", 5: "Close Game",
+                      6: "Game Layout", 7: "Mod Buttons", 8: "Game Tools"]
+        Toggle(titles[key] ?? "", isOn: Binding(get: { !hidden }, set: { hidden = !$0 }))
     }
 }
 

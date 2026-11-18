@@ -361,6 +361,8 @@ def prepare_runtime(version, cache, build, *, host=True):
     shutil.move(sdk / "renpy.py", base / "renpy_entry.py")
     shutil.copyfile(sdk / "LICENSE.txt", base / "RenPy-LICENSE.txt")
     configure_game_reload(base / "renpy")
+    shutil.copyfile(ROOT / "Scripts" / "player_tools.py", base / "renios_tools.py")
+    shutil.copyfile(ROOT / "Scripts" / "player_tools.rpy", base / "renpy" / "common" / "00renios_tools.rpy")
     shutil.copyfile(ROOT / "Scripts" / "engine_main.py", base / "renios_runtime.py")
     return prototype
 

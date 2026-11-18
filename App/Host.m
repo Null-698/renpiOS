@@ -15,6 +15,8 @@ extern int SDL_PushEvent(void *event);
 #if RENIOS_SDL3
 extern void *SDL_GetKeyboardFocus(void);
 extern bool SDL_StartTextInput(void *window);
+extern void **SDL_GetWindows(int *count);
+extern void SDL_free(void *memory);
 extern int SDL_RunApp(int, char **, int (*)(int, char **), void *);
 #else
 extern void SDL_StartTextInput(void);
@@ -33,6 +35,12 @@ static void (*activeStartKeyboard)(void);
 static void startDefaultKeyboard(void) {
 #if RENIOS_SDL3
     void *window = SDL_GetKeyboardFocus();
+    if (!window) {
+        int count = 0;
+        void **windows = SDL_GetWindows(&count);
+        if (windows && count == 1) { window = windows[0]; }
+        SDL_free(windows);
+    }
     if (window) { SDL_StartTextInput(window); }
 #else
     SDL_StartTextInput();
@@ -323,8 +331,18 @@ void renios_toggle_keyboard(void) {
     }
 
     keyboardDismissedByPlayer = NO;
+    UIViewController *controller = gameController;
+    [controller.view.window makeKeyWindow];
     activeStartKeyboard();
-    [field becomeFirstResponder];
+    // SDL can attach its input view while starting text input.
+    if (![gameTextField() becomeFirstResponder]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (gameController == controller && activeStartKeyboard && !keyboardDismissedByPlayer) {
+                activeStartKeyboard();
+                [gameTextField() becomeFirstResponder];
+            }
+        });
+    }
 }
 
 void renios_playback_key(int scancode, int keycode) {

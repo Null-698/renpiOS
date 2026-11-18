@@ -21,6 +21,8 @@ func runReniOSLibrary() {
 final class Session {
     var novels = LibraryStore.list()
     let activity = PlayActivity()
+    var importStatus: String?
+    var hiddenLibraryOpen = false
     var isImporting = false
     var message: String?
     private(set) var importReview: LibraryStore.ImportPlan?
@@ -135,6 +137,7 @@ final class Session {
     @ObservationIgnored private var authenticationContext: LAContext?
 
     func cancelAuthentication() {
+        hiddenLibraryOpen = false
         authenticationContext?.invalidate()
         authenticationContext = nil
         pending = nil
@@ -157,9 +160,13 @@ final class Session {
         }
     }
 
+    func needsUnlock(_ game: Novel) -> Bool {
+        game.requiresAuthentication && !(game.isHidden == true && hiddenLibraryOpen)
+    }
+
     func launch(_ novel: Novel) {
         guard !isImporting, let game = novels.first(where: { $0.id == novel.id }) else { return }
-        if game.requiresAuthentication {
+        if needsUnlock(game) {
             Task {
                 guard await authenticate("Unlock this game to play."), !isImporting,
                       let current = novels.first(where: { $0.id == game.id }) else { return }
@@ -191,7 +198,9 @@ final class Session {
     func add(_ source: URL?) {
         guard !isImporting else { return }
         isImporting = true
+        importStatus = "Preparing game…"
         Task {
+            defer { importStatus = nil }
             do {
                 if let source {
                     let plan = try await Task.detached(priority: .userInitiated) {
@@ -240,6 +249,9 @@ final class Session {
     }
 
     private func completeImport(_ plan: LibraryStore.ImportPlan, choice: LibraryStore.ImportChoice) async {
+        if case .update = choice { importStatus = "Updating " + plan.incoming.title + "…" }
+        else { importStatus = "Installing " + plan.incoming.title + "…" }
+        defer { importStatus = nil }
         do {
             let installed = try await Task.detached(priority: .userInitiated) {
                 defer { LibraryStore.discardImport(plan) }
@@ -343,6 +355,8 @@ final class Session {
         }
         overlay.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.alert.rawValue - 1)
         let controls = PlaybackControlsController()
+        controls.toolsRequest = novel.root.appending(path: ".renios-tools-request")
+        if let marker = controls.toolsRequest { try? FileManager.default.removeItem(at: marker) }
         controls.currentLayout = novel.layoutProfile ?? "auto"
         controls.changeLayout = { [weak self] profile in
             guard let self, var game = novels.first(where: { $0.id == novel.id }) else { throw CocoaError(.fileNoSuchFile) }
@@ -353,7 +367,7 @@ final class Session {
         }
         overlay.rootViewController = controls
         controls.loadViewIfNeeded()
-        overlay.touchTargets = [controls.handle, controls.bar] + controls.independentButtons
+        overlay.touchTargets = [controls.handle] + controls.independentButtons
         overlay.isHidden = false
         return overlay
     }
@@ -376,7 +390,7 @@ private final class PlaybackControlsController: UIViewController {
     var currentLayout = "auto"
     var changeLayout: ((String) throws -> Void)?
     let handle = UIButton(type: .system)
-    let bar = UIStackView()
+    var toolsRequest: URL?
     private(set) var independentButtons: [UIButton] = []
     private let controlsMode = UserDefaults.standard.string(forKey: "controlsLayout") ?? "horizontal"
     private let controlsOpacity = UserDefaults.standard.object(forKey: "controlsOpacity") == nil
@@ -384,7 +398,6 @@ private final class PlaybackControlsController: UIViewController {
     private var independentPositions: [Int: CGPoint] = [:]
     private var expanded = false
     private var dragOrigin = CGPoint.zero
-    private var dragPosition: CGPoint?
     private var dock = CGPoint(x: 1, y: 0)
 
     override func viewDidLoad() {
@@ -397,54 +410,51 @@ private final class PlaybackControlsController: UIViewController {
 
         handle.configuration = configuration("ellipsis")
         handle.accessibilityLabel = "Show Game Controls"
-        handle.addAction(UIAction { [weak self] _ in self?.setExpanded(true) }, for: .touchUpInside)
+        handle.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            setExpanded(!expanded)
+        }, for: .touchUpInside)
         view.addSubview(handle)
-
-        bar.axis = controlsMode == "vertical" ? .vertical : .horizontal
-        bar.spacing = 4
-        bar.alignment = .center
-        bar.addArrangedSubview(button("Hide Game Controls", "chevron.down") { [weak self] in self?.setExpanded(false) })
-        bar.addArrangedSubview(button("Previous", "backward.end.fill") { renios_playback_key(75, 1 << 30 | 75) })
-        bar.addArrangedSubview(button("Skip", "forward.end.fill") { renios_playback_key(43, 9) })
-        bar.addArrangedSubview(button("Game Settings", "gearshape") { renios_playback_key(41, 27) })
-        bar.addArrangedSubview(button("Show or Hide Keyboard", "keyboard") { renios_toggle_keyboard() })
-        let layoutButton = button("Game Layout", "rectangle.3.group") { [weak self] in self?.chooseLayout() }
-        bar.addArrangedSubview(layoutButton)
-        bar.addArrangedSubview(button("Close Game", "power", tint: .systemOrange) { [weak self] in
-            self?.confirmExit()
-        })
-        if controlsMode == "separate" {
-            independentButtons = bar.arrangedSubviews.compactMap { $0 as? UIButton }
-            for (index, button) in independentButtons.enumerated() {
-                bar.removeArrangedSubview(button)
-                button.removeFromSuperview()
-                for constraint in button.constraints where constraint.firstAttribute == .width || constraint.firstAttribute == .height {
-                    constraint.isActive = false
-                }
-                button.translatesAutoresizingMaskIntoConstraints = true
-                // Keep the power button at its saved position after adding Game Layout.
-                let positionKey = index == 5 ? 6 : index == 6 ? 5 : index
-                button.tag = positionKey
-                let values = UserDefaults.standard.array(forKey: "controlPosition-\(positionKey)") as? [Double]
-                if let values, values.count == 2, values.allSatisfy({ $0.isFinite && (0...1).contains($0) }) {
-                    independentPositions[positionKey] = CGPoint(x: values[0], y: values[1])
-                }
-                view.addSubview(button)
-                button.alpha = 0
-                button.isUserInteractionEnabled = false
-                button.accessibilityElementsHidden = true
-                button.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(dragIndependent(_:))))
+        handle.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(drag(_:))))
+        let definitions: [(Int, String, String, () -> Void)] = [
+            (1, "Previous", "backward.end.fill", { renios_playback_key(75, 1 << 30 | 75) }),
+            (2, "Skip", "forward.end.fill", { renios_playback_key(43, 9) }),
+            (3, "Game Settings", "gearshape", { renios_playback_key(41, 27) }),
+            (4, "Keyboard", "keyboard", { renios_toggle_keyboard() }),
+            (6, "Game Layout", "rectangle.3.group", { [weak self] in self?.chooseLayout() }),
+            (7, "Mod Buttons", "puzzlepiece.extension", { [weak self] in self?.openTools("mods") }),
+            (8, "Game Tools", "wrench.and.screwdriver", { [weak self] in self?.openTools("tools") }),
+            (5, "Close Game", "power", { [weak self] in self?.confirmExit() })
+        ]
+        expanded = UserDefaults.standard.bool(forKey: "playbackControlsExpanded")
+        for (key, title, symbol, action) in definitions {
+            guard !UserDefaults.standard.bool(forKey: "hidePlaybackControl-" + String(key)) else { continue }
+            let item = button(title, symbol, tint: key == 5 ? .systemOrange : .white, action: action)
+            item.tag = key
+            let values = UserDefaults.standard.array(forKey: "controlPosition-" + String(key)) as? [Double]
+            if let values, values.count == 2, values.allSatisfy({ $0.isFinite && (0...1).contains($0) }) {
+                independentPositions[key] = CGPoint(x: values[0], y: values[1])
             }
+            independentButtons.append(item)
+            view.addSubview(item)
+            item.addGestureRecognizer(UIPanGestureRecognizer(target: self, action:
+                controlsMode == "separate" ? #selector(dragIndependent(_:)) : #selector(drag(_:))))
         }
+        view.bringSubviewToFront(handle)
         handle.alpha = controlsOpacity
-        view.addSubview(bar)
-        bar.alpha = 0
-        if !UIAccessibility.isReduceMotionEnabled { bar.transform = CGAffineTransform(scaleX: 0.87, y: 0.87) }
-        bar.isUserInteractionEnabled = false
-        bar.accessibilityElementsHidden = true
-        for target in [handle as UIView, bar] {
-            target.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(drag(_:))))
+        updateHandle()
+        positionControls()
+    }
+
+    private func openTools(_ kind: String) {
+        guard let toolsRequest else { return }
+        do { try Data(kind.utf8).write(to: toolsRequest, options: .atomic) }
+        catch {
+            let alert = UIAlertController(title: "Game Tools", message: error.localizedDescription, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            present(alert, animated: true)
         }
+
     }
 
     override func viewDidLayoutSubviews() {
@@ -471,7 +481,7 @@ private final class PlaybackControlsController: UIViewController {
             })
         }
         picker.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        let source = (bar.arrangedSubviews + independentButtons).first { $0.accessibilityLabel == "Game Layout" } ?? handle
+        let source = independentButtons.first { $0.accessibilityLabel == "Game Layout" } ?? handle
         picker.popoverPresentationController?.sourceView = source
         picker.popoverPresentationController?.sourceRect = source.bounds
         present(picker, animated: true)
@@ -481,8 +491,7 @@ private final class PlaybackControlsController: UIViewController {
         guard presentedViewController == nil else { return }
         let alert = UIAlertController(title: "Close Game?", message: "Return to your library.", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Keep Playing", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Close Game", style: .destructive) { [weak self] _ in
-            self?.setExpanded(false)
+        alert.addAction(UIAlertAction(title: "Close Game", style: .destructive) { _ in
             renios_request_quit()
         })
         present(alert, animated: !UIAccessibility.isReduceMotionEnabled)
@@ -490,31 +499,32 @@ private final class PlaybackControlsController: UIViewController {
 
     private func positionControls() {
         let bounds = available
-        let count = max(bar.arrangedSubviews.count, 1)
-        let span = CGFloat(count) * 44 + CGFloat(count - 1) * bar.spacing
-        let barWidth: CGFloat = controlsMode == "vertical" ? 44 : span
-        let barHeight: CGFloat = controlsMode == "vertical" ? span : 44
-        // Both layouts share a proportional position within their usable ranges.
-        func frame(width: CGFloat, height: CGFloat) -> CGRect {
-            let horizontal = max(0, bounds.width - width)
-            let vertical = max(0, bounds.height - height)
-            let x = dragPosition.map { min(max($0.x - bounds.minX - width / 2, 0), horizontal) }
-                ?? horizontal * dock.x
-            let y = dragPosition.map { min(max($0.y - bounds.minY - height / 2, 0), vertical) }
-                ?? vertical * dock.y
-            return CGRect(x: bounds.minX + x, y: bounds.minY + y, width: width, height: height)
-        }
+        guard bounds.width >= 44, bounds.height >= 44 else { return }
+        let width = bounds.width - 44
+        let height = bounds.height - 44
+        let origin = CGPoint(x: bounds.minX + 22 + width * dock.x, y: bounds.minY + 22 + height * dock.y)
         handle.bounds.size = CGSize(width: 44, height: 44)
-        bar.bounds.size = CGSize(width: barWidth, height: barHeight)
-        let handleFrame = frame(width: 44, height: 44)
-        let barFrame = frame(width: barWidth, height: barHeight)
-        handle.center = .init(x: handleFrame.midX, y: handleFrame.midY)
-        bar.center = .init(x: barFrame.midX, y: barFrame.midY)
-        for button in independentButtons {
-            let point = independentPositions[button.tag]
-                ?? CGPoint(x: 1, y: CGFloat(button.tag + 1) / CGFloat(independentButtons.count + 1))
-            button.frame = CGRect(x: bounds.minX + max(bounds.width - 44, 0) * point.x,
-                                  y: bounds.minY + max(bounds.height - 44, 0) * point.y, width: 44, height: 44)
+        handle.center = origin
+        let vertical = controlsMode == "vertical"
+        let dx: CGFloat = dock.x <= 0.5 ? 1 : -1
+        let dy: CGFloat = dock.y <= 0.5 ? 1 : -1
+        let roomX = width * max(dock.x, 1 - dock.x)
+        let roomY = height * max(dock.y, 1 - dock.y)
+        let lanes = max(1, Int((vertical ? roomY : roomX) / 48))
+        for (index, item) in independentButtons.enumerated() {
+            let lane = CGFloat(index % lanes + 1) * 48
+            let row = CGFloat(index / lanes) * 48
+            var x = origin.x + dx * (vertical ? row : lane)
+            var y = origin.y + dy * (vertical ? lane : row)
+            if controlsMode == "separate", let point = independentPositions[item.tag] {
+                x = bounds.minX + 22 + width * point.x
+                y = bounds.minY + 22 + height * point.y
+            }
+            item.bounds.size = CGSize(width: 44, height: 44)
+            item.center = expanded ? CGPoint(x: x, y: y) : origin
+            item.alpha = expanded ? controlsOpacity : 0
+            item.isUserInteractionEnabled = expanded
+            item.accessibilityElementsHidden = !expanded
         }
     }
 
@@ -541,23 +551,16 @@ private final class PlaybackControlsController: UIViewController {
     }
 
     @objc private func drag(_ recognizer: UIPanGestureRecognizer) {
-        guard let target = recognizer.view else { return }
+        let bounds = available
         switch recognizer.state {
-        case .began:
-            dragOrigin = target.center
+        case .began: dragOrigin = handle.frame.origin
         case .changed:
-            let translation = recognizer.translation(in: view)
-            dragPosition = CGPoint(x: dragOrigin.x + translation.x, y: dragOrigin.y + translation.y)
+            let delta = recognizer.translation(in: view)
+            dock = CGPoint(x: min(max((dragOrigin.x + delta.x - bounds.minX) / max(bounds.width - 44, 1), 0), 1),
+                           y: min(max((dragOrigin.y + delta.y - bounds.minY) / max(bounds.height - 44, 1), 0), 1))
             positionControls()
         case .ended, .cancelled, .failed:
-            let bounds = available
-            let horizontal = bounds.width - target.bounds.width
-            let vertical = bounds.height - target.bounds.height
-            if horizontal > 0 { dock.x = min(max((target.frame.minX - bounds.minX) / horizontal, 0), 1) }
-            if vertical > 0 { dock.y = min(max((target.frame.minY - bounds.minY) / vertical, 0), 1) }
             UserDefaults.standard.set([Double(dock.x), Double(dock.y)], forKey: "playbackControlsPosition")
-            dragPosition = nil
-            positionControls()
         default: break
         }
     }
@@ -582,36 +585,23 @@ private final class PlaybackControlsController: UIViewController {
         button.addAction(UIAction { _ in
             action()
         }, for: .touchUpInside)
-        button.widthAnchor.constraint(equalToConstant: 44).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 44).isActive = true
         return button
     }
 
-    private func setExpanded(_ showing: Bool) {
-        guard showing != expanded else { return }
-        expanded = showing
-        handle.isUserInteractionEnabled = !showing
-        handle.accessibilityElementsHidden = showing
-        bar.isUserInteractionEnabled = showing && controlsMode != "separate"
-        bar.accessibilityElementsHidden = !showing || controlsMode == "separate"
-        for button in independentButtons {
-            button.isUserInteractionEnabled = showing
-            button.accessibilityElementsHidden = !showing
-        }
-        let reduced = UIAccessibility.isReduceMotionEnabled
-        UIView.animate(withDuration: reduced ? 0.12 : 0.28, delay: 0,
-                       options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseInOut]) {
-            self.handle.alpha = showing ? 0 : self.controlsOpacity
-            self.bar.alpha = showing && self.controlsMode != "separate" ? self.controlsOpacity : 0
-            for button in self.independentButtons {
-                button.alpha = showing ? self.controlsOpacity : 0
-                button.transform = showing || reduced ? .identity : CGAffineTransform(scaleX: 0.87, y: 0.87)
-            }
-            self.handle.transform = showing && !reduced ? CGAffineTransform(scaleX: 0.78, y: 0.78) : .identity
-            self.bar.transform = showing || reduced ? .identity : CGAffineTransform(scaleX: 0.87, y: 0.87)
-        }
+    private func updateHandle() {
+        handle.configuration = configuration(expanded ? "chevron.compact.down" : "ellipsis")
+        handle.accessibilityLabel = expanded ? "Hide Game Controls" : "Show Game Controls"
     }
 
+    private func setExpanded(_ showing: Bool) {
+        expanded = showing
+        UserDefaults.standard.set(showing, forKey: "playbackControlsExpanded")
+        updateHandle()
+        UIView.animate(withDuration: UIAccessibility.isReduceMotionEnabled ? 0 : 0.26, delay: 0,
+                       options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseInOut]) {
+            self.positionControls()
+        }
+    }
 
 }
 
@@ -622,7 +612,7 @@ private final class PlaybackControlsController: UIViewController {
 
 private struct LibraryScreen: View {
     private enum LibraryTab: Hashable {
-        case library, insights, settings, search
+        case library, insights, settings, search, addGame
     }
 
     @Environment(\.dynamicTypeSize) private var dynamicType
@@ -641,7 +631,7 @@ private struct LibraryScreen: View {
     @AppStorage("librarySort") private var sortKey = LibrarySort.recent.rawValue
     @AppStorage("allowGameLock") private var allowLock = true
     @AppStorage("allowGameHide") private var allowHide = true
-    @State private var viewingHidden = false
+    private var viewingHidden: Bool { session.hiddenLibraryOpen }
     @State private var deletion: Novel?
     @State private var importing = false
     @State private var filter = ""
@@ -765,14 +755,25 @@ private struct LibraryScreen: View {
             }
         }
         .background(ink.ignoresSafeArea())
+        .overlay(alignment: .center) {
+            if let status = session.importStatus {
+                VStack(spacing: 12) {
+                    ProgressView().controlSize(.large)
+                    Text(status).font(.headline).multilineTextAlignment(.center)
+                }
+                .padding(22).frame(maxWidth: 290)
+                .background(.regularMaterial, in: .rect(cornerRadius: 20))
+                .accessibilityElement(children: .combine)
+            }
+        }
         .preferredColorScheme(AppStyle.theme)
         .tint(amber)
         .onChange(of: libraryTab) { _, tab in
-            if tab != .library { viewingHidden = false }
+            if tab != .library { session.hiddenLibraryOpen = false }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
             session.cancelAuthentication()
-            viewingHidden = false
+            session.hiddenLibraryOpen = false
             if selected?.requiresAuthentication == true { selected = nil }
             gameToLaunch = nil
             deletion = nil
@@ -829,7 +830,11 @@ private struct LibraryScreen: View {
     }
 
     private func launcher(wide: Bool, games: [Novel], feature: Novel?) -> some View {
-        TabView(selection: $libraryTab) {
+        TabView(selection: Binding(get: { libraryTab }, set: { tab in
+            if tab == .addGame {
+                if !session.isImporting { searchPresented = false; importing = true }
+            } else { libraryTab = tab }
+        })) {
             Tab("Library", systemImage: "books.vertical", value: .library) {
                 VStack(spacing: 0) {
                     header("Library", showsImport: true)
@@ -877,6 +882,7 @@ private struct LibraryScreen: View {
                 AppSettingsView(initialPage: previewName?.components(separatedBy: "@").first?.replacingOccurrences(of: "-light", with: "") == "Appearance" ? .appearance : nil)
             }
 
+            Tab("Import", systemImage: "plus", value: .addGame) { Color.clear }
             Tab(value: .search, role: .search) {
                 NavigationStack {
                     Group {
@@ -894,15 +900,7 @@ private struct LibraryScreen: View {
                     .background(ink)
                     .navigationTitle("Search Games")
                     .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("Import Game", systemImage: "plus") {
-                                searchPresented = false
-                                importing = true
-                            }
-                            .disabled(session.isImporting)
-                        }
-                    }
+
                 }
                 .searchable(text: $filter, isPresented: $searchPresented, prompt: "Search games")
             }
@@ -921,7 +919,7 @@ private struct LibraryScreen: View {
               session.novels.contains(where: { $0.isHidden == true }),
               await session.authenticate("Open your hidden games."), libraryTab == .library else { return }
         openedID = nil
-        viewingHidden = true
+        session.hiddenLibraryOpen = true
     }
 
     @ViewBuilder private func gameActions(_ game: Novel) -> some View {
@@ -937,7 +935,7 @@ private struct LibraryScreen: View {
         }
         Button("Delete Game", systemImage: "trash", role: .destructive) {
             Task {
-                if game.requiresAuthentication {
+                if session.needsUnlock(game) {
                     guard await session.authenticate("Manage this protected game.") else { return }
                 }
                 deletion = game
@@ -947,29 +945,31 @@ private struct LibraryScreen: View {
 
     private func changeProtection(_ game: Novel, hiding: Bool) {
         Task {
-            guard await session.authenticate("Change privacy for this game."),
-                  var current = session.novels.first(where: { $0.id == game.id }) else { return }
+            if !(game.isHidden == true && viewingHidden) {
+                guard await session.authenticate("Change privacy for this game.") else { return }
+            }
+            guard var current = session.novels.first(where: { $0.id == game.id }) else { return }
             if hiding { current.isHidden = current.isHidden != true }
             else { current.isLocked = current.isLocked != true }
             session.update(current)
             openedID = nil
-            if viewingHidden && !session.novels.contains(where: { $0.isHidden == true }) { viewingHidden = false }
+            if viewingHidden && !session.novels.contains(where: { $0.isHidden == true }) { session.hiddenLibraryOpen = false }
         }
     }
 
     private func header(_ title: String, showsImport: Bool = false) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "book.closed.fill")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(amber)
-                .frame(width: 28, height: 28)
+                .frame(width: 32, height: 32)
                 .background(amber.opacity(0.12), in: .rect(cornerRadius: 8))
                 .accessibilityHidden(true)
             Text("reniOS")
-                .font(ThemeSelection.shared.current == .standard ? .subheadline.monospaced().weight(.semibold) : .system(.title3, design: .serif).weight(.semibold))
+                .font(ThemeSelection.shared.current == .standard ? .headline.monospaced().weight(.semibold) : .system(.title2, design: .serif).weight(.semibold))
                 .foregroundStyle(cream)
             if showsImport && viewingHidden {
-                Button("Hidden Games", systemImage: "chevron.backward") { viewingHidden = false; openedID = nil }
+                Button("Hidden Games", systemImage: "chevron.backward") { session.hiddenLibraryOpen = false; openedID = nil }
             } else if !showsImport {
                 Rectangle()
                     .fill(.primary.opacity(0.15))
@@ -997,28 +997,10 @@ private struct LibraryScreen: View {
                         .frame(width: 44, height: 44)
                 }
                 .accessibilityLabel("Sort Library")
-                importButton
             }
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 9)
-    }
-
-    private var importButton: some View {
-        Button {
-            searchPresented = false
-            importing = true
-        } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(amber)
-                .frame(width: 48, height: 48)
-                .glassEffect(.regular.interactive(), in: .circle)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Import Game")
-        .accessibilityIdentifier("importGame")
-        .disabled(session.isImporting)
     }
 
     private func tideLauncher(feature: Novel, games: [Novel]) -> some View {
@@ -1032,7 +1014,7 @@ private struct LibraryScreen: View {
                         let offset = (games.firstIndex { $0.id == game.id } ?? index) - index
                         let angle = reduceMotion ? 0 : Double(offset) * 5 - 2
                         Button { centerGame(game.id) } label: {
-                            CoverArt(url: showThumbnails ? game.cover : nil, tint: amber)
+                            CoverArt(url: showThumbnails ? game.cover : nil, tint: amber, locked: game.isLocked == true)
                                 .frame(width: w, height: h)
                                 .clipShape(.rect(cornerRadius: 6)).themeCase(6)
                                 .contentShape(.rect)
@@ -1172,7 +1154,7 @@ private struct LibraryScreen: View {
 
         return ZStack(alignment: .trailing) {
             if open {
-                CoverArt(url: showThumbnails ? game.cover : nil, tint: carouselTint(game))
+                CoverArt(url: showThumbnails ? game.cover : nil, tint: carouselTint(game), locked: game.isLocked == true)
                     .scaleEffect(1.15)
                     .blur(radius: 32)
                     .overlay {
@@ -1206,7 +1188,7 @@ private struct LibraryScreen: View {
     }
 
     private func carouselFace(_ game: Novel, selected: Bool, height: CGFloat) -> some View {
-        CoverArt(url: showThumbnails ? game.cover : nil, tint: carouselTint(game))
+        CoverArt(url: showThumbnails ? game.cover : nil, tint: carouselTint(game), locked: game.isLocked == true)
             .overlay {
                 LinearGradient(colors: [.clear, .black.opacity(0.84)], startPoint: .center, endPoint: .bottom)
             }
@@ -1364,7 +1346,7 @@ private struct LibraryScreen: View {
                             Button { showOptions(game) } label: {
                                 VStack(alignment: .leading, spacing: 8) {
                                     if showThumbnails {
-                                        CoverArt(url: showThumbnails ? game.cover : nil, tint: amber)
+                                        CoverArt(url: showThumbnails ? game.cover : nil, tint: amber, locked: game.isLocked == true)
                                             .aspectRatio(ThemeSelection.shared.current == .tide ? 1.02 : 1.52, contentMode: .fit)
                                             .overlay(alignment: .bottomLeading) {
                                                 gameVersions(game)
@@ -1397,7 +1379,7 @@ private struct LibraryScreen: View {
     private func gameRow(_ game: Novel, highlighted: Bool) -> some View {
         HStack(spacing: 9) {
             if showThumbnails {
-                CoverArt(url: game.cover, tint: amber)
+                CoverArt(url: game.cover, tint: amber, locked: game.isLocked == true)
                     .frame(width: 52, height: 37)
                     .clipShape(.rect(cornerRadius: 6))
             }
@@ -1423,7 +1405,7 @@ private struct LibraryScreen: View {
 
     private func featureCard(_ game: Novel, compact: Bool) -> some View {
         ZStack(alignment: .bottomLeading) {
-            CoverArt(url: showThumbnails ? game.cover : nil, tint: amber)
+            CoverArt(url: showThumbnails ? game.cover : nil, tint: amber, locked: game.isLocked == true)
             LinearGradient(stops: [.init(color: .clear, location: 0.15),
                                    .init(color: Color.black.opacity(0.52), location: 0.49),
                                    .init(color: Color.black.opacity(0.88), location: 1)],
@@ -1475,7 +1457,7 @@ private struct LibraryScreen: View {
     }
 
     private func showOptions(_ game: Novel, tab: GameTab = .overview) {
-        if game.requiresAuthentication {
+        if session.needsUnlock(game) {
             Task {
                 guard await session.authenticate("Open options for this protected game.") else { return }
                 presentOptions(game, tab: tab)
@@ -1602,6 +1584,7 @@ private struct ImportReviewSheet: View {
 private struct CoverArt: View {
     let url: URL?
     let tint: Color
+    var locked = false
     @State private var cover: UIImage?
 
     var body: some View {
@@ -1632,7 +1615,15 @@ private struct CoverArt: View {
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
+            .blur(radius: locked ? 16 : 0, opaque: true)
             .clipped()
+            .overlay {
+                if locked {
+                    Image(systemName: "lock.fill").font(.title3.weight(.semibold))
+                        .foregroundStyle(.white).padding(9).background(.black.opacity(0.65), in: .circle)
+                        .accessibilityLabel("Locked")
+                }
+            }
         }
         .task(id: url) {
             cover = nil
