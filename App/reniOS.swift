@@ -55,7 +55,10 @@ final class Session {
         if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--launcher-preview") {
             let arguments = ProcessInfo.processInfo.arguments.dropFirst(index + 1)
             previewName = arguments.first
-            let screen = previewName?.replacingOccurrences(of: "-light", with: "") ?? ""
+            if let mode = previewName?.components(separatedBy: "@").dropFirst().first {
+                UserDefaults.standard.register(defaults: ["libraryTheme": mode])
+            }
+            let screen = previewName?.components(separatedBy: "@").first?.replacingOccurrences(of: "-light", with: "") ?? ""
             if screen == "Insights-off" {
                 UserDefaults.standard.register(defaults: ["insightsEnabled": false])
             }
@@ -484,6 +487,10 @@ private final class PlaybackControlsController: UIViewController {
         style.image = UIImage(systemName: symbol)
         style.baseForegroundColor = tint
         style.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+        if ThemeSelection.shared.current != .standard, tint == .white {
+            style.baseForegroundColor = UIColor(ThemeSelection.shared.current.highlight)
+            style.baseBackgroundColor = UIColor(ThemeSelection.shared.current.surface)
+        }
         return style
     }
 
@@ -528,15 +535,10 @@ private final class PlaybackControlsController: UIViewController {
 
 }
 
-@MainActor var ink: Color {
-    Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark ? UIColor(red: 0.045, green: 0.053, blue: 0.075, alpha: 1)
-            : UIColor(red: 0.96, green: 0.96, blue: 0.975, alpha: 1)
-    })
-}
-@MainActor var cream: Color { Color.primary }
+@MainActor var ink: Color { ThemeSelection.shared.current.canvas }
+@MainActor var cream: Color { ThemeSelection.shared.current.lettering }
 @MainActor var amber: Color { AppStyle.accent }
-@MainActor var panel: Color { Color(uiColor: .secondarySystemGroupedBackground) }
+@MainActor var panel: Color { ThemeSelection.shared.current.surface }
 
 private struct LibraryScreen: View {
     private enum LibraryTab: Hashable {
@@ -585,7 +587,7 @@ private struct LibraryScreen: View {
             _openedID = State(initialValue: id)
             _highlightedID = State(initialValue: id)
         }
-        let screen = previewName?.replacingOccurrences(of: "-light", with: "") ?? ""
+        let screen = previewName?.components(separatedBy: "@").first?.replacingOccurrences(of: "-light", with: "") ?? ""
         _libraryTab = State(initialValue: screen == "Settings" || screen == "Appearance" ? .settings : previewInsights == nil ? .library : .insights)
         _selected = State(initialValue: previewTab != nil || screen == "landscape-options" ? session.novels.first : nil)
         _wideLayout = State(initialValue: previewLandscape)
@@ -697,6 +699,7 @@ private struct LibraryScreen: View {
                 gameToLaunch = game
             }
                 .presentationDetents([.large])
+                .themedSheet()
                 .presentationDragIndicator(.visible)
                 .presentationCompactAdaptation(.none)
         }
@@ -731,7 +734,8 @@ private struct LibraryScreen: View {
                     header("Library", showsImport: true)
                     if let feature {
                         if wide {
-                            landscape(feature: feature, games: games)
+                            if ThemeSelection.shared.current == .tide { tideLauncher(feature: feature, games: games) }
+                            else { landscape(feature: feature, games: games) }
                         } else {
                             portrait(games: games)
                         }
@@ -758,7 +762,7 @@ private struct LibraryScreen: View {
             }
 
             Tab("Settings", systemImage: "gearshape", value: .settings) {
-                AppSettingsView(initialPage: previewName?.replacingOccurrences(of: "-light", with: "") == "Appearance" ? .appearance : nil)
+                AppSettingsView(initialPage: previewName?.components(separatedBy: "@").first?.replacingOccurrences(of: "-light", with: "") == "Appearance" ? .appearance : nil)
             }
 
             Tab(value: .search, role: .search) {
@@ -803,7 +807,7 @@ private struct LibraryScreen: View {
                 .background(amber.opacity(0.12), in: .rect(cornerRadius: 8))
                 .accessibilityHidden(true)
             Text("reniOS")
-                .font(.subheadline.monospaced().weight(.semibold))
+                .font(ThemeSelection.shared.current == .standard ? .subheadline.monospaced().weight(.semibold) : .system(.title3, design: .serif).weight(.semibold))
                 .foregroundStyle(cream)
             Rectangle()
                 .fill(.primary.opacity(0.15))
@@ -852,6 +856,55 @@ private struct LibraryScreen: View {
         .accessibilityLabel("Import Game")
         .accessibilityIdentifier("importGame")
         .disabled(session.isImporting)
+    }
+
+    private func tideLauncher(feature: Novel, games: [Novel]) -> some View {
+        GeometryReader { geo in
+            let index = games.firstIndex { $0.id == feature.id } ?? 0
+            let h = max(72, geo.size.height - 24)
+            let w = min(h * 1.12, geo.size.width * 0.37)
+            HStack(spacing: 20) {
+                ZStack {
+                    ForEach(Array(games[max(0, index - 2)...min(games.count - 1, index + 2)])) { game in
+                        let offset = (games.firstIndex { $0.id == game.id } ?? index) - index
+                        let angle = reduceMotion ? 0 : Double(offset) * 5 - 2
+                        Button {
+                            if offset == 0 { showOptions(game) } else { centerGame(game.id) }
+                        } label: {
+                            CoverArt(url: showThumbnails ? game.cover : nil, tint: amber)
+                                .frame(width: w, height: h)
+                                .clipShape(.rect(cornerRadius: 6)).themeCase(6)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(game.title)
+                        .rotationEffect(.degrees(angle))
+                        .offset(x: CGFloat(offset) * w * 0.16)
+                        .scaleEffect(offset == 0 ? 1 : 0.85)
+                        .zIndex(Double(3 - abs(offset)))
+                    }
+                }.frame(width: geo.size.width * 0.49)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(feature.title).font(.system(.title, design: .serif).italic())
+                        .foregroundStyle(cream).lineLimit(2).minimumScaleFactor(0.65)
+                    gameVersions(feature)
+                    libraryAction("Play", icon: "play.fill", prominent: true) { session.launch(feature) }
+                        .disabled(session.isImporting || Session.engine(for: feature) == nil)
+                    libraryAction("Options", icon: "slider.horizontal.3") { showOptions(feature) }
+                }.frame(maxWidth: 360).padding(.trailing, 20)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(.rect)
+            .simultaneousGesture(carouselSwipe(games: games, center: index, stride: max(w, 100)))
+            .accessibilityScrollAction { edge in
+                if edge == .leading || edge == .trailing {
+                    moveCarousel(in: games, from: index, direction: edge == .leading ? -1 : 1)
+                }
+            }
+            .background {
+                Image("Tide").resizable().scaledToFill().opacity(0.18)
+                    .frame(width: geo.size.width, height: geo.size.height).clipped()
+            }
+        }
     }
 
     private func landscape(feature: Novel, games: [Novel]) -> some View {
@@ -964,7 +1017,7 @@ private struct LibraryScreen: View {
                         LinearGradient(colors: [ink.opacity(0.42), ink.opacity(0.70)],
                                        startPoint: .leading, endPoint: .trailing)
                     }
-                    .clipShape(.rect(cornerRadius: 19))
+                    .clipShape(.rect(cornerRadius: 19)).themeCase(19)
                     .overlay { RoundedRectangle(cornerRadius: 19).strokeBorder(.white.opacity(0.12)) }
                     .transition(.opacity)
                     .allowsHitTesting(false)
@@ -1011,6 +1064,7 @@ private struct LibraryScreen: View {
                 RoundedRectangle(cornerRadius: 19)
                     .strokeBorder(selected ? amber.opacity(0.8) : .white.opacity(0.16), lineWidth: selected ? 2 : 1)
             }
+            .themeCase(19)
             .contentShape(.rect(cornerRadius: 19))
     }
 
@@ -1030,24 +1084,28 @@ private struct LibraryScreen: View {
 
     private func carouselTint(_ game: Novel) -> Color {
         let index = game.title.utf8.reduce(0) { ($0 * 31 + Int($1)) % 4 }
+        if ThemeSelection.shared.current != .standard { return amber }
         return [amber, Color(red: 0.56, green: 0.63, blue: 0.97),
                 Color(red: 0.48, green: 0.81, blue: 0.70), Color(red: 0.91, green: 0.54, blue: 0.64)][index]
     }
 
     private func libraryAction(_ title: String, icon: String, prominent: Bool = false,
                                action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 9) {
-                Image(systemName: icon).font(.system(size: 15, weight: .bold))
-                Text(title).font(.headline.weight(.semibold)).lineLimit(1)
+        let solid = prominent && ThemeSelection.shared.current != .standard
+        return Button(action: action) {
+            let label = Label(title, systemImage: icon)
+                .font(.headline.weight(.semibold)).lineLimit(1)
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, minHeight: 46)
+            if solid {
+                label.foregroundStyle(LibraryTheme.color(0x17212a, 0xffffff))
+                    .background(amber, in: .capsule)
+            } else {
+                label.foregroundStyle(prominent ? Color.white : cream)
+                    .glassEffect(.regular.tint(prominent ? amber.opacity(0.46) : nil).interactive(),
+                                 in: .rect(cornerRadius: prominent ? 17 : 22))
             }
-            .foregroundStyle(prominent ? Color.white : cream)
-            .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, minHeight: 50)
-            .glassEffect(.regular.tint(prominent ? amber.opacity(0.46) : nil).interactive(),
-                         in: .rect(cornerRadius: prominent ? 17 : 22))
-        }
-        .buttonStyle(.plain)
+        }.buttonStyle(.plain)
     }
 
     private nonisolated static func coverColor(at url: URL?) -> UInt32? {
@@ -1125,7 +1183,7 @@ private struct LibraryScreen: View {
                             Text("Last Played").font(.headline).accessibilityAddTraits(.isHeader)
                         }
                         Button { showOptions(feature) } label: {
-                            featureCard(feature, compact: false).frame(minHeight: 238)
+                            featureCard(feature, compact: false).frame(minHeight: ThemeSelection.shared.current == .standard ? 238 : 300).themeCase(19)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Open options for \(feature.title)")
@@ -1150,12 +1208,12 @@ private struct LibraryScreen: View {
                                 VStack(alignment: .leading, spacing: 8) {
                                     if showThumbnails {
                                         CoverArt(url: showThumbnails ? game.cover : nil, tint: amber)
-                                            .aspectRatio(1.52, contentMode: .fit)
+                                            .aspectRatio(ThemeSelection.shared.current == .tide ? 1.02 : 1.52, contentMode: .fit)
                                             .overlay(alignment: .bottomLeading) {
                                                 gameVersions(game)
                                                     .padding(7)
                                             }
-                                            .clipShape(.rect(cornerRadius: 12))
+                                            .clipShape(.rect(cornerRadius: 12)).themeCase(12)
                                     }
                                     Text(game.title)
                                         .font(.subheadline.weight(.semibold))
@@ -1296,56 +1354,59 @@ private struct ImportReviewSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(plan.incoming.title).font(.headline)
-                        Text(plan.incoming.gameVersion.map { "Importing version \($0)" } ?? "Incoming version unknown")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Button(plan.matchingGames.isEmpty ? "Start Fresh" : "Install Separately",
-                           systemImage: "plus.square.on.square") { choose(.fresh) }
-                } footer: {
-                    Text("Creates a new game and save folder.")
-                }
-
-                if !plan.matchingGames.isEmpty {
+                Group {
                     Section {
-                        ForEach(plan.matchingGames) { game in
-                            Button {
-                                choose(.update(game.id))
-                            } label: {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(actionTitle(for: game))
-                                    Text(versionSummary(for: game))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                    if plan.matchingGames.count > 1 {
-                                        Text(game.root.lastPathComponent).font(.caption2).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(plan.incoming.title).font(.headline)
+                            Text(plan.incoming.gameVersion.map { "Importing version \($0)" } ?? "Incoming version unknown")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Button(plan.matchingGames.isEmpty ? "Start Fresh" : "Install Separately",
+                               systemImage: "plus.square.on.square") { choose(.fresh) }
+                    } footer: {
+                        Text("Creates a new game and save folder.")
+                    }
+
+                    if !plan.matchingGames.isEmpty {
+                        Section {
+                            ForEach(plan.matchingGames) { game in
+                                Button {
+                                    choose(.update(game.id))
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(actionTitle(for: game))
+                                        Text(versionSummary(for: game))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                        if plan.matchingGames.count > 1 {
+                                            Text(game.root.lastPathComponent).font(.caption2).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                            }
+                        } header: {
+                            Text("Installed Games")
+                        } footer: {
+                            Text("Keeps your saves and disables installed mods until you re-enable them.")
+                        }
+                    }
+                    if !plan.retainedSaves.isEmpty {
+                        Section("Retained Saves") {
+                            ForEach(plan.retainedSaves) { save in
+                                Button {
+                                    choose(.attach(save.id))
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text("Use Saves for \(save.title)")
+                                        Text(save.folder.lastPathComponent)
+                                            .font(.caption).foregroundStyle(.secondary)
                                     }
                                 }
                             }
                         }
-                    } header: {
-                        Text("Installed Games")
-                    } footer: {
-                        Text("Keeps your saves and disables installed mods until you re-enable them.")
                     }
-                }
-                if !plan.retainedSaves.isEmpty {
-                    Section("Retained Saves") {
-                        ForEach(plan.retainedSaves) { save in
-                            Button {
-                                choose(.attach(save.id))
-                            } label: {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text("Use Saves for \(save.title)")
-                                    Text(save.folder.lastPathComponent)
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }
-                }
+                }.listRowBackground(panel)
             }
+            .scrollContentBackground(.hidden).background(ink)
             .navigationTitle("Review Import")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1382,6 +1443,8 @@ private struct CoverArt: View {
             Group {
                 if let cover {
                     Image(uiImage: cover).resizable().scaledToFill()
+                } else if let name = ThemeSelection.shared.current.artwork {
+                    Image(name).resizable().scaledToFill()
                 } else {
                     ZStack {
                         LinearGradient(colors: [Color(red: 0.23, green: 0.18, blue: 0.24), ink],
@@ -1526,6 +1589,7 @@ private struct NovelSheet: View {
         }
         .sheet(isPresented: $choosingEngine) {
             EnginePicker(selection: engine, automaticVersion: Session.automaticEngine(for: novel))
+                .themedSheet()
                 .presentationDragIndicator(.visible)
                 .presentationDetents([.large])
                 .preferredColorScheme(AppStyle.theme)
@@ -1778,7 +1842,7 @@ private struct NovelSheet: View {
                 .disabled(session.isImporting)
             } footer: {
                 Text("Applies to this game on its next launch. Stretches the image to remove engine-generated borders. Borders in the artwork may remain.")
-            }
+            }.listRowBackground(panel)
         }
         .scrollContentBackground(.hidden)
     }
@@ -1888,6 +1952,7 @@ private struct EnginePicker: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden).background(ink)
             .navigationTitle("Ren’Py Engine")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, prompt: "Search versions")
@@ -1918,5 +1983,6 @@ private struct EnginePicker: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selection == version ? .isSelected : [])
+        .listRowBackground(panel)
     }
 }

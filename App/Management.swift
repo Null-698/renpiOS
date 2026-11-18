@@ -430,7 +430,7 @@ private extension View {
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .frame(minHeight: 62)
-            .background(.primary.opacity(0.045), in: .rect(cornerRadius: 17))
+            .background(ThemeSelection.shared.current == .standard ? Color.primary.opacity(0.045) : panel, in: .rect(cornerRadius: 17))
             .overlay { RoundedRectangle(cornerRadius: 17).strokeBorder(.primary.opacity(0.09)).allowsHitTesting(false) }
             .contentShape(.rect(cornerRadius: 17))
             .listRowBackground(Color.clear)

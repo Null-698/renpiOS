@@ -430,6 +430,15 @@ def prepare(version, cache, legacy_versions=()):
     if version == "8.6.0":
         plist["CFBundleIdentifier"] = BUNDLE_ID + ".preview"
     plist_path.write_bytes(plistlib.dumps(plist))
+    for picture in ("Observatory", "Tide"):
+        image_set = prototype / "Media.xcassets" / (picture + ".imageset")
+        image_set.mkdir(exist_ok=True)
+        filename = picture + ".jpg"
+        shutil.copyfile(ROOT / "Art" / filename, image_set / filename)
+        (image_set / "Contents.json").write_text(json.dumps({
+            "images": [{"filename": filename, "idiom": "universal"}],
+            "info": {"author": "xcode", "version": 1}
+        }))
     app_icon(prototype)
     project = prototype / "prototype.xcodeproj" / "project.pbxproj"
     configure_project(project, version)

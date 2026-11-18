@@ -188,7 +188,7 @@ struct InsightsView: View {
                 .padding(.bottom, 16)
                 .frame(maxWidth: .infinity)
             }
-            .foregroundStyle(.primary)
+            .foregroundStyle(cream)
             .background(ink)
         }
     }
@@ -263,7 +263,7 @@ struct InsightsView: View {
                     }
                 }
             }
-            .id(scheme)
+            .id("\(scheme)-\(ThemeSelection.shared.current.rawValue)")
             .chartXSelection(value: $selectedDay)
             .frame(height: wide ? 174 : 152)
             .accessibilityLabel("Play time on your five busiest days")

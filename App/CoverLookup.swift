@@ -162,6 +162,7 @@ struct CoverFinder: View {
                 .frame(maxWidth: .infinity)
                 .padding(18)
             }
+            .background(ink)
             .navigationTitle("Find Cover")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

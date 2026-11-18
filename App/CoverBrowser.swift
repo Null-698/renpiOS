@@ -187,6 +187,7 @@ struct CoverBrowser: View {
                     Text(message).font(.footnote).foregroundStyle(.secondary).padding(8)
                 }
             }
+            .background(ink)
             .navigationTitle(session.browserTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
