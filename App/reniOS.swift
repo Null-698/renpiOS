@@ -868,17 +868,17 @@ private struct LibraryScreen: View {
                     ForEach(Array(games[max(0, index - 2)...min(games.count - 1, index + 2)])) { game in
                         let offset = (games.firstIndex { $0.id == game.id } ?? index) - index
                         let angle = reduceMotion ? 0 : Double(offset) * 5 - 2
-                        Button {
-                            if offset == 0 { showOptions(game) } else { centerGame(game.id) }
-                        } label: {
+                        Button { centerGame(game.id) } label: {
                             CoverArt(url: showThumbnails ? game.cover : nil, tint: amber)
                                 .frame(width: w, height: h)
                                 .clipShape(.rect(cornerRadius: 6)).themeCase(6)
+                                .contentShape(.rect)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(game.title)
+                        .accessibilityAddTraits(offset == 0 ? .isSelected : [])
                         .rotationEffect(.degrees(angle))
-                        .offset(x: CGFloat(offset) * w * 0.16)
+                        .offset(x: CGFloat(offset) * w * 0.16 + (reduceMotion ? 0 : carouselDrag * 0.24))
                         .scaleEffect(offset == 0 ? 1 : 0.85)
                         .zIndex(Double(3 - abs(offset)))
                     }
@@ -894,14 +894,15 @@ private struct LibraryScreen: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(.rect)
-            .simultaneousGesture(carouselSwipe(games: games, center: index, stride: max(w, 100)))
+            .highPriorityGesture(carouselSwipe(games: games, center: index, stride: max(w, 100)),
+                                 including: games.count > 1 ? .all : .subviews)
             .accessibilityScrollAction { edge in
                 if edge == .leading || edge == .trailing {
                     moveCarousel(in: games, from: index, direction: edge == .leading ? -1 : 1)
                 }
             }
             .background {
-                Image("Tide").resizable().scaledToFill().opacity(0.18)
+                Image("Tide").resizable().scaledToFill().opacity(0.18).allowsHitTesting(false)
                     .frame(width: geo.size.width, height: geo.size.height).clipped()
             }
         }
