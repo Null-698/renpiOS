@@ -859,10 +859,17 @@ private struct LibraryScreen: View {
                     header("Library", showsImport: true)
                     if let feature {
                         if wide {
-                            if ThemeSelection.shared.current == .tide { tideLauncher(feature: feature, games: games) }
-                            else {
-                                landscape(feature: feature, games: games)
-                                    .ignoresSafeArea(.container, edges: .horizontal)
+                            GeometryReader { bounds in
+                                let availableHeight = max(0, bounds.size.height - bounds.safeAreaInsets.bottom - 12)
+                                Group {
+                                    if ThemeSelection.shared.current == .tide {
+                                        tideLauncher(feature: feature, games: games)
+                                    } else {
+                                        landscape(feature: feature, games: games)
+                                            .ignoresSafeArea(.container, edges: .horizontal)
+                                    }
+                                }
+                                .frame(height: availableHeight)
                             }
                         } else {
                             portrait(games: games).refreshable { await openHidden() }
@@ -1032,7 +1039,7 @@ private struct LibraryScreen: View {
     private func tideLauncher(feature: Novel, games: [Novel]) -> some View {
         GeometryReader { geo in
             let index = games.firstIndex { $0.id == feature.id } ?? 0
-            let h = max(72, geo.size.height - 24)
+            let h = max(0, geo.size.height - 24)
             let w = min(h * 1.12, geo.size.width * 0.37)
             HStack(spacing: 20) {
                 ZStack {
@@ -1080,7 +1087,7 @@ private struct LibraryScreen: View {
         GeometryReader { geometry in
             let width = geometry.size.width
             let cardWidth = min(640, width * 0.66)
-            let cardHeight = max(106, geometry.size.height - 18)
+            let cardHeight = max(0, geometry.size.height - 18)
             let stride = cardWidth + 16
             let center = games.firstIndex(where: { $0.id == feature.id }) ?? 0
             let visible = max(0, center - 2)...min(games.count - 1, center + 2)
