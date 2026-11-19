@@ -692,11 +692,6 @@ private struct LibraryScreen: View {
         (LibrarySort(rawValue: sortKey) ?? .recent).sorted(session.novels.filter { ($0.isHidden == true) == (viewingHidden && libraryTab == .library) }, history: session.activity.history)
     }
 
-    private var visibleNovels: [Novel] {
-        let query = filter.trimmingCharacters(in: .whitespacesAndNewlines)
-        return query.isEmpty ? sortedNovels : sortedNovels.filter { $0.title.localizedCaseInsensitiveContains(query) }
-    }
-
     var body: some View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 500 && geometry.size.width > geometry.size.height && !dynamicType.isAccessibilitySize
@@ -730,9 +725,6 @@ private struct LibraryScreen: View {
                 guard !Task.isCancelled else { return }
                 if previewName == "Search" {
                     libraryTab = .search
-                    try? await Task.sleep(for: .milliseconds(350))
-                    guard !Task.isCancelled else { return }
-                    searchPresented = true
                     try? await Task.sleep(for: .milliseconds(600))
                     guard !Task.isCancelled else { return }
                 }
@@ -857,7 +849,10 @@ private struct LibraryScreen: View {
                     if let feature {
                         if wide {
                             if ThemeSelection.shared.current == .tide { tideLauncher(feature: feature, games: games) }
-                            else { landscape(feature: feature, games: games) }
+                            else {
+                                landscape(feature: feature, games: games)
+                                    .ignoresSafeArea(.container, edges: .horizontal)
+                            }
                         } else {
                             portrait(games: games).refreshable { await openHidden() }
                         }
@@ -878,9 +873,6 @@ private struct LibraryScreen: View {
                     }
                 }, isEnabled: wide || games.isEmpty)
                 .toolbarVisibility(.hidden, for: .tabBar)
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    libraryBottomBar
-                }
                 .accessibilityAction(named: "Open Hidden Games") { Task { await openHidden() } }
             }
 
@@ -894,25 +886,28 @@ private struct LibraryScreen: View {
                             .id(appearance)
                     }
                     .frame(maxHeight: .infinity, alignment: .top)
+                    .toolbarVisibility(.hidden, for: .tabBar)
                 }
-
             }
 
             Tab("Settings", systemImage: "gearshape", value: .settings) {
                 AppSettingsView(initialPage: previewName?.components(separatedBy: "@").first?.replacingOccurrences(of: "-light", with: "") == "Appearance" ? .appearance : nil)
+                    .toolbarVisibility(.hidden, for: .tabBar)
             }
 
-            Tab(value: .search, role: .search) {
+            Tab("Search", systemImage: "magnifyingglass", value: .search) {
+                let query = filter.trimmingCharacters(in: .whitespacesAndNewlines)
+                let matches = query.isEmpty ? games : games.filter { $0.title.localizedCaseInsensitiveContains(query) }
                 NavigationStack {
                     Group {
-                        if visibleNovels.isEmpty {
-                            if filter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        if matches.isEmpty {
+                            if query.isEmpty {
                                 ContentUnavailableView("No games in your library", systemImage: "books.vertical")
                             } else {
                                 ContentUnavailableView.search(text: filter)
                             }
                         } else {
-                            searchResults(visibleNovels)
+                            searchResults(matches)
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -922,9 +917,12 @@ private struct LibraryScreen: View {
 
                 }
                 .searchable(text: $filter, isPresented: $searchPresented, prompt: "Search games")
+                .onAppear { searchPresented = true }
+                .onDisappear { searchPresented = false }
+                .toolbarVisibility(.hidden, for: .tabBar)
             }
         }
-        .tabViewSearchActivation(.searchTabSelection)
+        .safeAreaInset(edge: .bottom, spacing: 0) { libraryBottomBar }
     }
 
     private var libraryBottomBar: some View {
@@ -942,8 +940,8 @@ private struct LibraryScreen: View {
             Spacer(minLength: 0)
 
             Button {
-                libraryTab = .search
-                searchPresented = true
+                if libraryTab == .search { searchPresented = true }
+                else { libraryTab = .search }
             } label: {
                 Image(systemName: "magnifyingglass")
                     .font(.title3.weight(.semibold))
