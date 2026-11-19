@@ -193,6 +193,7 @@ struct AppSettingsView: View {
         }
     }
 
+    @State private var searchingSettings = false
     @State private var query = ""
     private var matchingPages: [Page] {
         let words = query.split(whereSeparator: { $0.isWhitespace })
@@ -216,21 +217,47 @@ struct AppSettingsView: View {
     var body: some View {
         GeometryReader { geometry in
             if geometry.size.width >= 570 && geometry.size.width > geometry.size.height {
-                HStack(spacing: 0) {
-                    VStack(spacing: 4) {
-                        TextField("Search settings", text: $query)
-                            .textFieldStyle(.roundedBorder).padding(.horizontal, 12)
-                        List(matchingPages) { page in
-                            Button { path = [page] } label: {
-                                Label(page.rawValue, systemImage: page.icon)
-                                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
+                let selected = path.last ?? .appearance
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 10) {
+                        if searchingSettings {
+                            TextField("Find a setting", text: $query)
+                                .textFieldStyle(.roundedBorder)
+                        } else {
+                            Text("Settings").font(.title3.weight(.semibold))
+                        }
+                        Spacer(minLength: 4)
+                        Button {
+                            searchingSettings.toggle()
+                            if !searchingSettings { query = "" }
+                        } label: {
+                            Image(systemName: searchingSettings ? "xmark" : "magnifyingglass")
+                                .frame(width: 34, height: 32)
+                        }.buttonStyle(.glass).accessibilityLabel("Search settings")
+                    }
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 7) {
+                            ForEach(matchingPages) { page in
+                                Button { path = [page] } label: {
+                                    Label(page.rawValue, systemImage: page.icon)
+                                        .font(.subheadline.weight(.medium)).fixedSize()
+                                        .padding(.horizontal, 13).frame(minHeight: 36)
+                                        .foregroundStyle(page == selected ? amber : cream)
+                                        .background(page == selected ? amber.opacity(0.18) : panel, in: .capsule)
+                                }.buttonStyle(.plain)
                             }
-                            .listRowBackground((path.last ?? .appearance) == page ? amber.opacity(0.16) : panel)
-                        }.listStyle(.plain).scrollContentBackground(.hidden)
-                    }.frame(width: min(260, geometry.size.width * 0.32))
-                    Divider()
-                    NavigationStack { SettingsPage(page: path.last ?? .appearance).id(path.last ?? .appearance) }
-                }.background(ink)
+                        }
+                    }.scrollIndicators(.hidden)
+                    if matchingPages.isEmpty { ContentUnavailableView.search(text: query) }
+                    else {
+                        NavigationStack {
+                            SettingsPage(page: matchingPages.contains(selected) ? selected : matchingPages[0])
+                                .toolbar(.hidden, for: .navigationBar)
+                                .contentMargins(.top, 4, for: .scrollContent)
+                        }.id(selected)
+                    }
+                }
+                .padding(.horizontal, 16).background(ink)
             } else { portraitSettings }
         }
     }
@@ -307,7 +334,7 @@ private struct SettingsPage: View {
                     Text("Light").tag("light")
                     Text("System").tag("system")
                 }
-                NavigationLink("Custom Themes") { ThemeGallery() }
+                NavigationLink("Custom Themes") { ThemeGallery().toolbar(.visible, for: .navigationBar) }
                 if ThemeSelection.shared.current == .standard {
                     ColorPicker("Accent Color", selection: accent, supportsOpacity: false)
                     Button("Reset Accent") { red = 0.96; green = 0.73; blue = 0.48 }

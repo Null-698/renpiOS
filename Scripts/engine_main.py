@@ -131,14 +131,16 @@ def install_layout_control(renpy, root):
         if 0 <= now - last_check[0] < 0.25:
             return
         last_check[0] = now
+        import renios_tools
+        renios_tools.tick()
         if os.path.isfile(tools_request):
             try:
                 with open(tools_request, "rb") as source:
-                    mode = source.read(8).decode("ascii")
+                    request_data = source.read(65536).decode("utf-8")
                 os.remove(tools_request)
-                if mode in ("mods", "tools"):
-                    import renios_tools
-                    renios_tools.open_panel(mode)
+                renios_tools.dispatch(tools_request, request_data)
+            except renpy.game.CONTROL_EXCEPTIONS:
+                raise
             except Exception as error:
                 sys.stderr.write("reniOS game tools: {}\n".format(error))
                 renpy.exports.notify("Could not open game tools.")

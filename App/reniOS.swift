@@ -323,6 +323,9 @@ final class Session {
         defer {
             activity.finish()
             overlay.isHidden = true
+            for suffix in ["", ".reply", ".reply.tmp"] {
+                try? FileManager.default.removeItem(at: novel.root.appending(path: ".renios-tools-request" + suffix))
+            }
         }
         let result = novel.root.path.withCString { game in
             novel.saves.path.withCString { saves in
@@ -367,7 +370,7 @@ final class Session {
         }
         overlay.rootViewController = controls
         controls.loadViewIfNeeded()
-        overlay.touchTargets = [controls.handle] + controls.independentButtons
+        overlay.touchTargets = [controls.handle, controls.toolsHandle] + controls.independentButtons
         overlay.isHidden = false
         return overlay
     }
@@ -390,6 +393,7 @@ private final class PlaybackControlsController: UIViewController {
     var currentLayout = "auto"
     var changeLayout: ((String) throws -> Void)?
     let handle = UIButton(type: .system)
+    let toolsHandle = UIButton(type: .system)
     var toolsRequest: URL?
     private(set) var independentButtons: [UIButton] = []
     private let controlsMode = UserDefaults.standard.string(forKey: "controlsLayout") ?? "horizontal"
@@ -423,7 +427,6 @@ private final class PlaybackControlsController: UIViewController {
             (4, "Keyboard", "keyboard", { renios_toggle_keyboard() }),
             (6, "Game Layout", "rectangle.3.group", { [weak self] in self?.chooseLayout() }),
             (7, "Mod Buttons", "puzzlepiece.extension", { [weak self] in self?.openTools("mods") }),
-            (8, "Game Tools", "wrench.and.screwdriver", { [weak self] in self?.openTools("tools") }),
             (5, "Close Game", "power", { [weak self] in self?.confirmExit() })
         ]
         expanded = UserDefaults.standard.bool(forKey: "playbackControlsExpanded")
@@ -440,6 +443,18 @@ private final class PlaybackControlsController: UIViewController {
             item.addGestureRecognizer(UIPanGestureRecognizer(target: self, action:
                 controlsMode == "separate" ? #selector(dragIndependent(_:)) : #selector(drag(_:))))
         }
+        toolsHandle.configuration = configuration("slider.vertical.3", tint: .systemMint)
+        toolsHandle.accessibilityLabel = "Game Tools"
+        toolsHandle.tag = 8
+        toolsHandle.isHidden = UserDefaults.standard.bool(forKey: "hidePlaybackControl-8")
+        toolsHandle.alpha = controlsOpacity
+        toolsHandle.addAction(UIAction { [weak self] _ in self?.openTools("tools") }, for: .touchUpInside)
+        toolsHandle.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(dragIndependent(_:))))
+        if let saved = UserDefaults.standard.array(forKey: "controlPosition-8") as? [Double],
+           saved.count == 2, saved.allSatisfy({ $0.isFinite && (0...1).contains($0) }) {
+            independentPositions[8] = CGPoint(x: saved[0], y: saved[1])
+        }
+        view.addSubview(toolsHandle)
         view.bringSubviewToFront(handle)
         handle.alpha = controlsOpacity
         updateHandle()
@@ -447,13 +462,16 @@ private final class PlaybackControlsController: UIViewController {
     }
 
     private func openTools(_ kind: String) {
-        guard let toolsRequest else { return }
-        do { try Data(kind.utf8).write(to: toolsRequest, options: .atomic) }
-        catch {
-            let alert = UIAlertController(title: "Game Tools", message: error.localizedDescription, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "OK", style: .default))
-            present(alert, animated: true)
-        }
+        guard let toolsRequest, presentedViewController == nil else { return }
+        let host = UIHostingController(rootView: GameWorkbench(request: toolsRequest, mods: kind == "mods",
+            close: { [weak self] in self?.dismiss(animated: true) },
+            shortcut: { [weak self] scan, code in
+                self?.dismiss(animated: true) { renios_playback_key(scan, code) }
+            }))
+        host.modalPresentationStyle = .pageSheet
+        host.sheetPresentationController?.detents = [.large()]
+        host.sheetPresentationController?.prefersGrabberVisible = true
+        present(host, animated: true)
 
     }
 
@@ -503,6 +521,8 @@ private final class PlaybackControlsController: UIViewController {
         let width = bounds.width - 44
         let height = bounds.height - 44
         let origin = CGPoint(x: bounds.minX + 22 + width * dock.x, y: bounds.minY + 22 + height * dock.y)
+        let toolPoint = independentPositions[8] ?? CGPoint(x: 0.04, y: 0.45)
+        toolsHandle.frame = CGRect(x: bounds.minX + width * toolPoint.x, y: bounds.minY + height * toolPoint.y, width: 44, height: 44)
         handle.bounds.size = CGSize(width: 44, height: 44)
         handle.center = origin
         let vertical = controlsMode == "vertical"
@@ -612,7 +632,7 @@ private final class PlaybackControlsController: UIViewController {
 
 private struct LibraryScreen: View {
     private enum LibraryTab: Hashable {
-        case library, insights, settings, search, addGame
+        case library, insights, settings, search
     }
 
     @Environment(\.dynamicTypeSize) private var dynamicType
@@ -662,7 +682,7 @@ private struct LibraryScreen: View {
             _highlightedID = State(initialValue: id)
         }
         let screen = previewName?.components(separatedBy: "@").first?.replacingOccurrences(of: "-light", with: "") ?? ""
-        _libraryTab = State(initialValue: screen == "Settings" || screen == "Appearance" ? .settings : previewInsights == nil ? .library : .insights)
+        _libraryTab = State(initialValue: screen == "Settings" || screen == "landscape-settings" || screen == "Appearance" ? .settings : previewInsights == nil ? .library : .insights)
         _selected = State(initialValue: previewTab != nil || screen == "landscape-options" ? session.novels.first : nil)
         _wideLayout = State(initialValue: previewLandscape)
         _selectedTab = State(initialValue: previewTab ?? .overview)
@@ -830,11 +850,7 @@ private struct LibraryScreen: View {
     }
 
     private func launcher(wide: Bool, games: [Novel], feature: Novel?) -> some View {
-        TabView(selection: Binding(get: { libraryTab }, set: { tab in
-            if tab == .addGame {
-                if !session.isImporting { searchPresented = false; importing = true }
-            } else { libraryTab = tab }
-        })) {
+        TabView(selection: $libraryTab) {
             Tab("Library", systemImage: "books.vertical", value: .library) {
                 VStack(spacing: 0) {
                     header("Library", showsImport: true)
@@ -861,6 +877,7 @@ private struct LibraryScreen: View {
                         Task { await openHidden() }
                     }
                 }, isEnabled: wide || games.isEmpty)
+                .ignoresSafeArea(.container, edges: .trailing)
                 .accessibilityAction(named: "Open Hidden Games") { Task { await openHidden() } }
             }
 
@@ -882,7 +899,6 @@ private struct LibraryScreen: View {
                 AppSettingsView(initialPage: previewName?.components(separatedBy: "@").first?.replacingOccurrences(of: "-light", with: "") == "Appearance" ? .appearance : nil)
             }
 
-            Tab("Import", systemImage: "plus", value: .addGame) { Color.clear }
             Tab(value: .search, role: .search) {
                 NavigationStack {
                     Group {
@@ -906,6 +922,21 @@ private struct LibraryScreen: View {
             }
         }
         .tabViewSearchActivation(.searchTabSelection)
+        .safeAreaInset(edge: .trailing, spacing: 0) {
+            if libraryTab == .library {
+                VStack {
+                    Spacer()
+                    Button {
+                        importing = true
+                    } label: {
+                        Image(systemName: "plus").font(.title3.weight(.semibold))
+                            .frame(width: 46, height: 46)
+                    }
+                    .buttonStyle(.glass).buttonBorderShape(.circle)
+                    .accessibilityLabel("Import Game").disabled(session.isImporting)
+                }.padding(.trailing, 6).padding(.bottom, 5)
+            }
+        }
     }
 
     private var visibleHistory: PlayHistory {
