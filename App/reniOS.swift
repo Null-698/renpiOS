@@ -877,7 +877,7 @@ private struct LibraryScreen: View {
                         Task { await openHidden() }
                     }
                 }, isEnabled: wide || games.isEmpty)
-                .ignoresSafeArea(.container, edges: .trailing)
+                .padding(.trailing, -60)
                 .accessibilityAction(named: "Open Hidden Games") { Task { await openHidden() } }
             }
 
@@ -922,10 +922,10 @@ private struct LibraryScreen: View {
             }
         }
         .tabViewSearchActivation(.searchTabSelection)
-        .safeAreaInset(edge: .trailing, spacing: 0) {
+        .padding(.trailing, libraryTab == .library ? 60 : 0)
+        .overlay(alignment: .bottomTrailing) {
             if libraryTab == .library {
-                VStack {
-                    Spacer()
+                Group {
                     Button {
                         importing = true
                     } label: {
