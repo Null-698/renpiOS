@@ -632,7 +632,7 @@ private final class PlaybackControlsController: UIViewController {
 
 private struct LibraryScreen: View {
     private enum LibraryTab: Hashable {
-        case library, insights, settings, search
+        case library, insights, settings, importGame, search
     }
 
     @Environment(\.dynamicTypeSize) private var dynamicType
@@ -842,7 +842,18 @@ private struct LibraryScreen: View {
     }
 
     private func launcher(wide: Bool, games: [Novel], feature: Novel?) -> some View {
-        TabView(selection: $libraryTab) {
+        TabView(selection: Binding(
+            get: { libraryTab },
+            set: { tab in
+                if tab == .importGame {
+                    guard !session.isImporting else { return }
+                    searchPresented = false
+                    importing = true
+                } else {
+                    libraryTab = tab
+                }
+            }
+        )) {
             Tab("Library", systemImage: "books.vertical", value: .library) {
                 VStack(spacing: 0) {
                     header("Library", showsImport: true)
@@ -872,7 +883,6 @@ private struct LibraryScreen: View {
                         Task { await openHidden() }
                     }
                 }, isEnabled: wide || games.isEmpty)
-                .toolbarVisibility(.hidden, for: .tabBar)
                 .accessibilityAction(named: "Open Hidden Games") { Task { await openHidden() } }
             }
 
@@ -886,16 +896,18 @@ private struct LibraryScreen: View {
                             .id(appearance)
                     }
                     .frame(maxHeight: .infinity, alignment: .top)
-                    .toolbarVisibility(.hidden, for: .tabBar)
                 }
             }
 
             Tab("Settings", systemImage: "gearshape", value: .settings) {
                 AppSettingsView(initialPage: previewName?.components(separatedBy: "@").first?.replacingOccurrences(of: "-light", with: "") == "Appearance" ? .appearance : nil)
-                    .toolbarVisibility(.hidden, for: .tabBar)
             }
 
-            Tab("Search", systemImage: "magnifyingglass", value: .search) {
+            Tab("Import", systemImage: "plus", value: .importGame) {
+                EmptyView()
+            }
+
+            Tab(value: .search, role: .search) {
                 let query = filter.trimmingCharacters(in: .whitespacesAndNewlines)
                 let matches = query.isEmpty ? games : games.filter { $0.title.localizedCaseInsensitiveContains(query) }
                 NavigationStack {
@@ -917,82 +929,9 @@ private struct LibraryScreen: View {
 
                 }
                 .searchable(text: $filter, isPresented: $searchPresented, prompt: "Search games")
-                .onAppear { searchPresented = true }
-                .onDisappear { searchPresented = false }
-                .toolbarVisibility(.hidden, for: .tabBar)
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { libraryBottomBar }
-    }
-
-    private var libraryBottomBar: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 0) {
-                libraryTabButton("Library", icon: "books.vertical", tab: .library)
-                if insightsEnabled {
-                    libraryTabButton("Insights", icon: "chart.bar.xaxis", tab: .insights)
-                }
-                libraryTabButton("Settings", icon: "gearshape", tab: .settings)
-            }
-            .padding(4)
-            .glassEffect(.regular, in: .capsule)
-
-            Spacer(minLength: 0)
-
-            Button {
-                if libraryTab == .search { searchPresented = true }
-                else { libraryTab = .search }
-            } label: {
-                Image(systemName: "magnifyingglass")
-                    .font(.title3.weight(.semibold))
-                    .frame(width: 48, height: 48)
-                    .glassEffect(.regular.interactive(), in: .circle)
-                    .contentShape(.circle)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Search Games")
-
-            Button {
-                importing = true
-            } label: {
-                Image(systemName: "plus")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(amber)
-                    .frame(width: 48, height: 48)
-                    .glassEffect(.regular.interactive(), in: .circle)
-                    .contentShape(.circle)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Import Game")
-            .disabled(session.isImporting)
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 4)
-    }
-
-    private func libraryTabButton(_ title: String, icon: String, tab: LibraryTab) -> some View {
-        Button {
-            libraryTab = tab
-        } label: {
-            VStack(spacing: 2) {
-                Image(systemName: icon)
-                    .font(.system(size: 19, weight: .semibold))
-                Text(title)
-                    .font(.caption2.weight(.medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            }
-            .frame(minWidth: 44, maxWidth: 76, minHeight: 44)
-            .foregroundStyle(libraryTab == tab ? amber : cream)
-            .background {
-                if libraryTab == tab {
-                    Capsule().fill(amber.opacity(0.13))
-                }
-            }
-            .contentShape(.capsule)
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(libraryTab == tab ? .isSelected : [])
+        .tabViewSearchActivation(.searchTabSelection)
     }
 
     private var visibleHistory: PlayHistory {
