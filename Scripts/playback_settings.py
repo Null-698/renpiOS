@@ -64,11 +64,17 @@ def configure(renpy):
         if hasattr(config, "predict_screens"):
             config.predict_screens = False
     if settings.get("dialogue"):
-        style = renpy.store.style
-        style.say_window.background = None
-        style.namebox.background = None
-        for text_style in (style.say_label, style.say_dialogue):
-            text_style.outlines = [(1, "#000", 0, 0)]
+        compute = renpy.character.compute_widget_properties
+        def dialogue_properties(*args, **kwargs):
+            props = dict(compute(*args, **kwargs))
+            for name in ("window", "namebox"):
+                props[name] = dict(props.get(name, {}), background=None)
+            for name in ("who", "what"):
+                props[name] = dict(props.get(name, {}), outlines=[(1, "#000", 0, 0)])
+            return props
+        replace(renpy.character, "compute_widget_properties", dialogue_properties)
+        if renpy.store.style.exists("namebox"):
+            renpy.store.style.namebox.background = None
     if settings.get("unseen"):
         cls = type(renpy.game.preferences)
         original = cls.__getattribute__
@@ -172,7 +178,12 @@ def install_fallback(renpy):
         if font not in coverage:
             try:
                 index, sep, filename = font.partition("@")
-                with renpy.loader.load(filename if sep else font, directory="fonts") as stream:
+                name = filename if sep else font
+                try:
+                    handle = renpy.loader.load(name, directory="fonts")
+                except TypeError:  # Older engines resolve fonts directly from the search path.
+                    handle = renpy.loader.load(name)
+                with handle as stream:
                     coverage[font] = cmap_checker(stream, int(index) if sep else 0)
             except (AttributeError, ValueError, TypeError, IOError, struct.error):
                 coverage[font] = None
