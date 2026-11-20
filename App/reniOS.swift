@@ -314,8 +314,7 @@ final class Session {
         try LibraryStore.removeLegacyValueEditor(for: novel)
         let startedAt = Date.now
         let displayConfiguration = novel.root.appending(path: ".renios-display.json")
-        let fillScreen = novel.fillScreen ?? false
-        let configuration: [String: Any] = ["fill": fillScreen, "layout": novel.effectiveLayout]
+        let configuration = EnginePreferences.configuration(for: novel)
         try JSONSerialization.data(withJSONObject: configuration).write(to: displayConfiguration, options: .atomic)
         let request = novel.root.appending(path: ".renios-layout-request")
         if FileManager.default.fileExists(atPath: request.path) { try FileManager.default.removeItem(at: request) }
@@ -2037,18 +2036,11 @@ private struct NovelSheet: View {
                     Text("Tablet").tag("tablet")
                     Text("Device Default").tag("device")
                 }
-                Toggle("Fill Screen", isOn: Binding(
-                    get: { novel.fillScreen ?? false },
-                    set: { value in
-                        var updated = novel
-                        updated.fillScreen = value
-                        session.update(updated)
-                    }
-                ))
-                .disabled(session.isImporting)
             } footer: {
-                Text("Change Game Layout during play from the controls bar. Fill Screen stretches the image on the next launch.")
+                Text("Change Game Layout during play from the controls bar.")
             }.listRowBackground(panel)
+            EngineSettingsSections(novel: novel, save: session.update)
+                .disabled(session.isImporting).listRowBackground(panel)
         }
         .scrollContentBackground(.hidden)
     }

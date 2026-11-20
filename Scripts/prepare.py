@@ -363,6 +363,7 @@ def prepare_runtime(version, cache, build, *, host=True):
     configure_game_reload(base / "renpy")
     shutil.copyfile(ROOT / "Scripts" / "player_tools.py", base / "renios_tools.py")
     shutil.copyfile(ROOT / "Scripts" / "player_tools.rpy", base / "renpy" / "common" / "00renios_tools.rpy")
+    shutil.copyfile(ROOT / "Scripts" / "playback_settings.py", base / "playback_settings.py")
     shutil.copyfile(ROOT / "Scripts" / "engine_main.py", base / "renios_runtime.py")
     return prototype
 
@@ -373,6 +374,14 @@ def prepare(version, cache, legacy_versions=()):
         shutil.rmtree(build)
     prototype = prepare_runtime(version, cache, build)
     base = prototype / "base"
+    fonts = base / "ReaderFonts"
+    fonts.mkdir()
+    url = "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf"
+    font = fonts / "renios-cjk.otf"
+    subprocess.run(["curl", "-fsSL", "--retry", "3", url, "-o", str(font)], check=True)
+    if digest(font) != "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b":
+        raise ValueError("Unexpected CJK fallback font checksum")
+    shutil.copyfile(ROOT / "Art" / "Noto-OFL.txt", fonts / "OFL.txt")
     shutil.copytree(ROOT / "Demo", base / "Demo")
     installed = [*legacy_versions, version]
     legacy_namespaces = {engine: f"R{index:02d}" for index, engine in enumerate(legacy_versions, 1)}

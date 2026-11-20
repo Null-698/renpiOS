@@ -1,6 +1,7 @@
 """Run a project in an initialized Ren'Py interpreter."""
 import os
 import sys
+import playback_settings
 from types import ModuleType
 
 initialized = False
@@ -17,6 +18,7 @@ def finish(renpy):
     usable = False
     if "renios_tools" in sys.modules:
         sys.modules["renios_tools"].reset()
+    playback_settings.reset()
     renpy.display.tts.tts(None)
     for callback in getattr(renpy.config, "python_exit_callbacks", ()):
         callback()
@@ -48,10 +50,11 @@ def play():
         import json
         try:
             with open(os.path.join(project, ".renios-display.json"), "rb") as source:
-                layout = json.load(source).get("layout")
+                options = json.load(source)
         except (IOError, ValueError):
-            layout = None
-        variants = LAYOUT_VARIANTS.get(layout)
+            options = {}
+        playback_settings.begin(options)
+        variants = LAYOUT_VARIANTS.get(options.get("layout"))
         if variants:
             os.environ["RENPY_VARIANT"] = variants
         if entry is None:
@@ -72,6 +75,7 @@ def play():
         if status.code:
             raise RuntimeError("Ren'Py stopped with status {!r}".format(status.code))
     finally:
+        playback_settings.reset()
         sys.path[:] = session_path
         sys.excepthook = original_excepthook
         os.chdir(original_directory)

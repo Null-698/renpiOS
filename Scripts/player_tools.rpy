@@ -21,3 +21,8 @@ screen _renios_link_button(targets):
             action Function(_renios_tools.link_button, rect, signature)
     textbutton "Tap the mod button · Cancel" align (.5, .04) action Hide("_renios_link_button") background Solid("#17232eff") padding (16, 8) text_color "#ffffff"
     key "game_menu" action Hide("_renios_link_button")
+
+init 1699 python hide:
+    import playback_settings
+    import renpy as engine
+    playback_settings.configure(engine)

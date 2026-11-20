@@ -177,16 +177,151 @@ enum LibrarySort: String, CaseIterable, Identifiable {
     }
 }
 
+enum EngineOption: String, CaseIterable, Identifiable {
+    case fill, dialogue, chinese, memory, refresh, rollback, skip, unseen, developer, console, network
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .fill: "Fill Screen"
+        case .dialogue: "Clear Dialogue Backgrounds"
+        case .chinese: "Chinese Glyph Fallback"
+        case .memory: "Smaller Image Cache"
+        case .refresh: "Reduce Screen Refreshes"
+        case .rollback: "Extended Rollback"
+        case .skip: "Allow Dialogue Skipping"
+        case .unseen: "Skip Unread Dialogue"
+        case .developer: "Developer Tools"
+        case .console: "Interactive Console"
+        case .network: "Game Python Networking"
+        }
+    }
+
+    var standard: Bool {
+        if self == .fill { return UserDefaults.standard.bool(forKey: "widescreen") }
+        return self == .network
+    }
+}
+
+struct EnginePreferences: Codable, Equatable, Sendable {
+    var flags: [String: Bool] = [:]
+    var volume: Double?
+
+    static let defaultsKey = "enginePlaybackDefaults"
+    static func decode(_ data: Data?) -> Self {
+        data.flatMap { try? JSONDecoder().decode(Self.self, from: $0) } ?? Self()
+    }
+
+    static func configuration(for novel: Novel) -> [String: Any] {
+        let global = decode(UserDefaults.standard.data(forKey: defaultsKey))
+        var config: [String: Any] = ["layout": novel.effectiveLayout,
+            "volume": min(1, max(0, novel.enginePreferences?.volume ?? global.volume ?? 1))]
+        for option in EngineOption.allCases {
+            let local = option == .fill ? novel.fillScreen : novel.enginePreferences?.flags[option.rawValue]
+            config[option.rawValue] = local ?? global.flags[option.rawValue] ?? option.standard
+        }
+        if let base = Bundle.main.url(forResource: "base", withExtension: nil) {
+            config["fontDirectory"] = base.appending(path: "ReaderFonts").path
+        }
+        return config
+    }
+}
+
+struct EngineSettingsSections: View {
+    @AppStorage(EnginePreferences.defaultsKey) private var data = Data()
+    var novel: Novel?
+    var save: ((Novel) -> Void)?
+    @State private var draftVolume: Double?
+
+    init(novel: Novel? = nil, save: ((Novel) -> Void)? = nil) {
+        self.novel = novel
+        self.save = save
+    }
+
+    private var global: EnginePreferences { EnginePreferences.decode(data) }
+
+    private func update(_ edit: (inout EnginePreferences) -> Void) {
+        if var game = novel {
+            var prefs = game.enginePreferences ?? EnginePreferences()
+            edit(&prefs)
+            game.enginePreferences = prefs
+            save?(game)
+        } else {
+            var prefs = global
+            edit(&prefs)
+            if let encoded = try? JSONEncoder().encode(prefs) { data = encoded }
+        }
+    }
+
+    private func optionRow(_ option: EngineOption) -> some View {
+        let inherited = global.flags[option.rawValue] ?? option.standard
+        return Group {
+            if let game = novel {
+                Picker(option.title, selection: Binding<Bool?>(
+                    get: { option == .fill ? game.fillScreen : game.enginePreferences?.flags[option.rawValue] },
+                    set: { newValue in
+                        if option == .fill {
+                            var updated = game
+                            updated.fillScreen = newValue
+                            save?(updated)
+                        } else { update { $0.flags[option.rawValue] = newValue } }
+                    }
+                )) {
+                    Text(inherited ? "Use Global (On)" : "Use Global (Off)").tag(nil as Bool?)
+                    Text("On").tag(true as Bool?)
+                    Text("Off").tag(false as Bool?)
+                }
+            } else {
+                Toggle(option.title, isOn: Binding(get: { inherited }, set: { newValue in
+                    update { $0.flags[option.rawValue] = newValue }
+                }))
+            }
+        }
+    }
+
+    var body: some View {
+        let level = novel?.enginePreferences?.volume ?? global.volume ?? 1
+        Section("Audio") {
+            if let novel {
+                Toggle("Use Global Volume (\(Int(((global.volume ?? 1) * 100).rounded()))%)",
+                       isOn: Binding(get: { novel.enginePreferences?.volume == nil },
+                                     set: { inherit in update { $0.volume = inherit ? nil : level } }))
+            }
+            LabeledContent("Game Volume", value: (draftVolume ?? level).formatted(.percent.precision(.fractionLength(0))))
+            Slider(value: Binding(get: { draftVolume ?? level }, set: { draftVolume = $0 }),
+                   in: 0...1, step: 0.01, onEditingChanged: { active in
+                if !active, let volume = draftVolume { update { $0.volume = volume }; draftVolume = nil }
+            }).accessibilityLabel("Game Volume")
+                .disabled(novel != nil && novel?.enginePreferences?.volume == nil)
+        }
+        Section("Display and Text") {
+            ForEach([EngineOption.fill, .dialogue, .chinese]) { optionRow($0) }
+        }
+        Section("Performance") {
+            ForEach([EngineOption.memory, .refresh]) { optionRow($0) }
+        }
+        Section {
+            ForEach([EngineOption.rollback, .skip, .unseen]) { optionRow($0) }
+        } header: { Text("Playback") } footer: { Text("Extended Rollback requests 100 rollback steps and 128 history entries. Games can still set checkpoints or block rollback in a scene.") }
+        Section {
+            ForEach([EngineOption.developer, .console, .network]) { optionRow($0) }
+        } header: { Text("Runtime") } footer: {
+            Text("Changes apply on the next game launch. Game Python Networking controls standard Python internet connections during play.")
+        }
+    }
+}
+
 struct AppSettingsView: View {
     enum Page: String, CaseIterable, Identifiable, Hashable {
         case appearance = "Appearance", insights = "Insights", library = "Library"
-        case controls = "In-Game Controls", help = "Help"
+        case runtime = "Ren’Py", controls = "In-Game Controls", help = "Help"
         var id: Self { self }
         var icon: String {
             switch self {
             case .appearance: "paintpalette"
             case .insights: "chart.bar.xaxis"
             case .library: "books.vertical"
+            case .runtime: "slider.horizontal.3"
             case .controls: "gamecontroller"
             case .help: "questionmark.circle"
             }
@@ -203,6 +338,7 @@ struct AppSettingsView: View {
             case .appearance: keywords = "custom themes gilded observatory midnight tide default dark light system accent color reset"
             case .insights: keywords = "enable disable tracking history streak play time"
             case .library: keywords = "show last played recent cover thumbnails layout grid list sort lock hide hidden privacy face id passcode"
+            case .runtime: keywords = "renpy volume rollback console developer network memory skipping refresh dialogue fonts fullscreen global"
             case .controls: keywords = "opacity transparency horizontal vertical row separate buttons drag"
             case .help: keywords = "guide import apk windows zip diagnostics crash saves mods backups patches"
             }
@@ -327,6 +463,7 @@ private struct SettingsPage: View {
 
     @ViewBuilder private var contents: some View {
         switch page {
+        case .runtime: EngineSettingsSections()
         case .appearance:
             Section {
                 Picker("Display Mode", selection: $appearance) {

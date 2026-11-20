@@ -13,6 +13,7 @@ struct Novel: Codable, Identifiable, Equatable, Sendable {
     var versionScanned: Bool?
     var engineOverride: String?
     var orientation: GameOrientation?
+    var enginePreferences: EnginePreferences?
     var fillScreen: Bool?
     var layoutProfile: String?
     var isHidden: Bool?
