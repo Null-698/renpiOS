@@ -1,5 +1,4 @@
 import SwiftUI
-import CryptoKit
 
 struct ToolEntry: Decodable, Identifiable {
     let name, value, kind: String
@@ -14,7 +13,7 @@ struct ToolReply: Decodable {
     let total: Int
     let enabled, canUndo: Bool
     let error: String?
-    let activated, urmAvailable: Bool?
+    let activated, limited: Bool?
 }
 
 private enum ToolPage: String, CaseIterable, Identifiable {
@@ -42,14 +41,17 @@ struct GameWorkbench: View {
     @State private var offset = 0
     @State private var reply: ToolReply?
     @State private var busy = false
-    @State private var editorStaged = false
+    @State private var scope = "Name or value"
+    @State private var valueType = "Original"
+    @State private var newName = ""
+    @State private var creating = false
     @State private var message: String?
     @State private var editing: ToolEntry?
     @State private var draft = ""
     @FocusState private var searching: Bool
 
     private var current: ToolPage { mods ? .mods : page }
-    private var filterID: [String] { [current.rawValue, query, filter, String(offset)] }
+    private var filterID: [String] { [current.rawValue, query, filter, scope, String(offset)] }
 
     var body: some View {
         GeometryReader { geo in
@@ -66,27 +68,21 @@ struct GameWorkbench: View {
                     if wide && !mods { VStack(spacing: 6) { tabs }.frame(width: 140) }
                     VStack(alignment: .leading, spacing: 8) {
                         if !wide && !mods { HStack(spacing: 5) { tabs } }
-                        if !mods && (current != .values || reply?.urmAvailable != true) { search }
-                        if current == .values {
-                            Button(reply?.urmAvailable == true ? "Open URM value editor" : "Install URM value editor") {
-                                if reply?.urmAvailable == true { command("urm", dismiss: true) }
-                                else { Task { await installEditor() } }
-                            }.buttonStyle(.glass).disabled(busy || reply == nil)
-                            if editorStaged && reply?.urmAvailable != true {
-                                Text("Exit and reopen this game to enable the URM value editor.").font(.footnote)
-                            }
-                            if reply?.urmAvailable != true { filters }
-                        }
+                        if !mods { search }
+                        if current == .values { filters }
                         if current == .gallery || current == .replays {
                             Toggle(current == .gallery ? "Unlock game gallery" : "Unlock game replays",
                                    isOn: Binding(get: { reply?.enabled ?? false }, set: { _ in command("toggle") }))
                                 .font(.subheadline.weight(.medium)).disabled(busy || reply == nil)
                         }
+                        if current == .values && reply?.limited == true {
+                            Text("Large collection: showing the first indexed values.").font(.footnote)
+                        }
                         if let message { Text(message).font(.footnote).foregroundStyle(.orange) }
                         ScrollView {
                             LazyVStack(spacing: 6) {
                                 ForEach(reply?.rows ?? []) { entry in entryRow(entry) }
-                                if let reply, reply.rows.isEmpty, current != .values || reply.urmAvailable != true {
+                                if let reply, reply.rows.isEmpty {
                                     Text(mods ? "No named mod buttons found in this scene." : "No matching items.")
                                         .foregroundStyle(.secondary).padding(12)
                                 }
@@ -117,13 +113,20 @@ struct GameWorkbench: View {
             if !Task.isCancelled { _ = await send("list") }
         }
         .task {
-            editorStaged = FileManager.default.fileExists(atPath: Self.editorArchive(in: request.deletingLastPathComponent()).path)
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
-                if !Task.isCancelled && current == .values && reply?.urmAvailable != true && !busy && editing == nil && !searching {
+                if !Task.isCancelled && current == .values && !busy && editing == nil && !searching {
                     _ = await send("list")
                 }
             }
+        }
+        .alert("Create game variable", isPresented: $creating) {
+            TextField("Variable name", text: $newName).textInputAutocapitalization(.never).autocorrectionDisabled()
+            TextField("Initial value", text: $draft)
+            Button("Create") { command("create", key: newName, draft: draft) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Enter a number, true, false, or text.")
         }
         .sheet(item: $editing) { entry in editor(entry) }
     }
@@ -154,10 +157,16 @@ struct GameWorkbench: View {
     private var filters: some View {
         HStack {
             Menu {
+                Picker("Search in", selection: $scope) {
+                    ForEach(["Name or value", "Name", "Value"], id: \.self) { Text($0).tag($0) }
+                }
+                Button("Capture comparison values") { command("snapshot") }
+                Button("Create variable") { newName = ""; draft = ""; creating = true }
                 Picker("Show", selection: $filter) {
-                    ForEach(["All", "Watching", "Frozen", "Changed"], id: \.self) { Text($0).tag($0) }
+                    ForEach(["All", "Watching", "Frozen", "Changed", "Increased", "Decreased"], id: \.self) { Text($0).tag($0) }
                 }
             } label: { Label(filter == "All" ? "All values" : filter, systemImage: "line.3.horizontal.decrease") }
+                .onChange(of: scope) { _, _ in offset = 0 }
                 .onChange(of: filter) { _, _ in offset = 0 }
             Spacer()
             Button("Undo", systemImage: "arrow.uturn.backward") { command("undo") }.disabled(reply?.canUndo != true || busy)
@@ -167,7 +176,7 @@ struct GameWorkbench: View {
     private func entryRow(_ entry: ToolEntry) -> some View {
         Button {
             if current == .values {
-                draft = entry.value; message = nil; editing = entry
+                valueType = "Original"; draft = entry.value; message = nil; editing = entry
             } else { command("open", key: entry.name, dismiss: true) }
         } label: {
             HStack(spacing: 12) {
@@ -206,7 +215,10 @@ struct GameWorkbench: View {
         NavigationStack {
             Form {
                 Section(entry.name) {
-                    if entry.kind == "bool" {
+                    Picker("Type", selection: $valueType) {
+                        ForEach(["Original", "Integer", "Decimal", "Boolean", "Text"], id: \.self) { Text($0).tag($0) }
+                    }
+                    if valueType == "Boolean" || (valueType == "Original" && entry.kind == "bool") {
                         Picker("Value", selection: $draft) { Text("True").tag("True"); Text("False").tag("False") }
                             .pickerStyle(.segmented)
                     } else {
@@ -245,7 +257,7 @@ struct GameWorkbench: View {
         busy = true
         defer { busy = false }
         let payload: [String: Any] = ["section": current.rawValue, "action": action, "key": key,
-                                      "query": query, "filter": filter, "draft": draft, "offset": offset]
+                                      "query": query, "filter": filter, "scope": scope, "valueType": valueType, "draft": draft, "offset": offset]
         do {
             let result = try await Self.exchange(payload, at: request)
             message = result.error
@@ -272,28 +284,4 @@ struct GameWorkbench: View {
         throw URLError(.timedOut)
     }
 
-    static func editorArchive(in root: URL) -> URL {
-        root.appending(path: ".renios-tools/Universal Ren'Py Mod.zip")
-    }
-
-    @MainActor private func installEditor() async {
-        guard !busy else { return }
-        busy = true
-        defer { busy = false }
-        do {
-            let archive = Self.editorArchive(in: request.deletingLastPathComponent())
-            if !FileManager.default.fileExists(atPath: archive.path) {
-                let url = URL(string: "https://api.0x52.dev/modversions/1223/download")!
-                let (data, response) = try await URLSession.shared.data(from: url)
-                guard (response as? HTTPURLResponse)?.statusCode == 200,
-                      SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined()
-                        == "00c548b250c7a264417f5d44b6b0ceb888474d1f9cbcda590e49ea71239292c7" else {
-                    throw URLError(.cannotDecodeContentData)
-                }
-                try FileManager.default.createDirectory(at: archive.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try data.write(to: archive, options: .atomic)
-            }
-            editorStaged = true
-        } catch { message = error.localizedDescription }
-    }
 }

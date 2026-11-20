@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import ZIPFoundation
 import zlib
@@ -765,6 +766,19 @@ enum LibraryStore {
         let current = try enabledMods(in: novel.root.appending(path: "game"))
         guard current.contains(id) != enabled else { return }
         try applyMods(enabled ? current + [id] : current.filter { $0 != id }, to: novel)
+    }
+
+    static func removeLegacyValueEditor(for novel: Novel) throws {
+        let staged = novel.root.appending(path: ".renios-tools/Universal Ren'Py Mod.zip")
+        if fm.fileExists(atPath: staged.path) { try fm.removeItem(at: staged) }
+        for mod in installedMods(for: novel) where mod.name == "Universal Ren'Py Mod" {
+            let payload = modStore(in: novel.root).appending(path: mod.id.uuidString).appending(path: "payload")
+            guard (try? fm.contentsOfDirectory(atPath: payload.path)) == ["0x52_URM.rpa"],
+                  let data = try? Data(contentsOf: payload.appending(path: "0x52_URM.rpa")),
+                  SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined()
+                    == "dbf47cfe27153d2d0009f88c9cd0510ef56e1b47bdca584a29dec86a628eafc5" else { continue }
+            try removeMod(mod.id, from: novel)
+        }
     }
 
     static func removeMod(_ id: UUID, from novel: Novel) throws {

@@ -1,5 +1,7 @@
 """Runtime services for the native game workbench. Supports Python 2 and 3."""
 from collections import deque
+import fnmatch
+import keyword
 import json
 import math
 import os
@@ -24,9 +26,9 @@ frozen = {}
 baseline = {}
 undo = []
 replays = {}
-session_roots = set()
+MISSING = object()
 linked = []
-LIMIT = 8000
+LIMIT = 40000
 
 
 def reset():
@@ -38,7 +40,7 @@ def reset():
     del originals[:]
     del undo[:]
     del linked[:]
-    for collection in (enabled, mod_actions, paths, watched, frozen, baseline, replays, session_roots):
+    for collection in (enabled, mod_actions, paths, watched, frozen, baseline, replays):
         collection.clear()
 
 
@@ -251,53 +253,98 @@ def find_buttons():
 
 
 def leaf(value):
-    return type(value) in numbers + strings + (bool,)
+    return type(value) in numbers + (bool, str, text_type)
 
 
-def members(value):
-    if isinstance(value, dict):
-        return ((key, val) for key, val in value.items() if type(key) in strings + (int,))
-    if isinstance(value, list):
-        return enumerate(value)
-    if type(value).__module__.split(".")[0] == "store" and not isinstance(value, type):
-        return ((key, val) for key, val in getattr(value, "__dict__", {}).items() if not key.startswith("_"))
-    return ()
+class AttributeFields(object):
+    def __init__(self, instance):
+        self.instance = instance
+
+    def __getitem__(self, key):
+        if key not in vars(self.instance):
+            raise KeyError(key)
+        return getattr(self.instance, key)
+
+    def __setitem__(self, key, value):
+        setattr(self.instance, key, value)
 
 
 def fields(value):
-    return value if isinstance(value, (list, dict)) else vars(value)
+    return value if isinstance(value, (list, dict)) else AttributeFields(value)
 
 
 def index_values():
     paths.clear()
-    values = renpy.python.store_dicts["store"]
-    for statement in getattr(renpy.ast, "default_statements", []):
-        if getattr(statement, "store", "") == "store" and getattr(statement, "varname", None):
-            session_roots.add(statement.varname)
-    roots = sorted(k for k in set(values.ever_been_changed) | session_roots if isinstance(k, strings) and not k.startswith("_") and k in values)
-    q = deque((k, (k,), values[k]) for k in roots)
+    stores = renpy.python.store_dicts
+    queue = deque()
+    for store in sorted(stores):
+        if store != "store" and (not store.startswith("store.") or
+                any(part.startswith("_") for part in store.split(".")) or stores[store].get("_constant")):
+            continue
+        prefix = "" if store == "store" else store[6:] + "."
+        for key, value in list(stores[store].items()):
+            if isinstance(key, strings) and not key.startswith("_"):
+                queue.append((prefix + key, (store, key), value))
     seen = set()
-    while q and len(paths) < LIMIT:
-        title, path, value = q.popleft()
+    count = 0
+    limited = False
+    while queue and count < LIMIT:
+        name, path, value = queue.popleft()
+        count += 1
         if leaf(value):
-            paths[title] = path
-        elif len(path) < 5 and id(value) not in seen:
-            seen.add(id(value))
-            for key, val in members(value):
-                if len(q) >= LIMIT:
-                    break
-                if isinstance(key, strings) and key.startswith("_"):
+            paths[name] = path
+            continue
+        if id(value) in seen:
+            continue
+        seen.add(id(value))
+        if isinstance(value, list):
+            items = enumerate(value)
+        elif isinstance(value, dict):
+            items = value.items()
+        elif (value is getattr(renpy.store, "persistent", None) and value is not None or
+              (type(value).__module__ or "").split(".")[0] == "store" and not isinstance(value, type)):
+            items = getattr(value, "__dict__", {}).items()
+        else:
+            continue
+        for key, child in items:
+            if len(queue) + count >= LIMIT:
+                limited = True
+                break
+            if isinstance(key, strings):
+                if key.startswith("_"):
                     continue
-                tail = "." + plain(key) if isinstance(key, strings) and re.match(r"^\w+$", key) else "[" + repr(key) + "]"
-                q.append((title + tail, path + (key,), val))
+                suffix = "[" + repr(key) + "]" if isinstance(value, dict) else "." + plain(key)
+            elif isinstance(key, numbers) and not isinstance(key, float):
+                suffix = "[" + str(key) + "]"
+            else:
+                continue
+            queue.append((name + suffix, path + (key,), child))
+    return bool(queue) or limited
 
 
 def slot(name):
     path = paths[name]
-    value = renpy.python.store_dicts["store"]
-    for key in path[:-1]:
+    value = renpy.python.store_dicts[path[0]]
+    for key in path[1:-1]:
         value = fields(value)[key]
     return fields(value), path[-1]
+
+
+def converted(draft, kind, original=None):
+    if kind == "Original":
+        dest = type(original)
+    else:
+        dest = {"Integer": int, "Decimal": float, "Boolean": bool, "Text": text_type}[kind]
+    if dest is bool:
+        if draft.lower() not in ("true", "false"):
+            raise ValueError("Choose true or false.")
+        return draft.lower() == "true"
+    if dest is bytes and dest is not text_type:
+        return draft.encode("utf-8")
+    value = dest(draft)
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        raise ValueError("Enter a finite number.")
+    return value
 
 
 def tick():
@@ -328,13 +375,39 @@ def process(req):
             enabled.add(section)
         renpy.exports.restart_interaction()
     if section == "values":
-        index_values()
+        limited = index_values()
+        if action == "snapshot":
+            baseline.clear()
+        if action == "create":
+            values = renpy.python.store_dicts["store"]
+            if not re.match(r"^[a-zA-Z][a-zA-Z0-9_]*\Z", key) or keyword.iskeyword(key) or key in values:
+                raise ValueError("Choose an unused game variable name starting with a letter.")
+            draft = req["draft"]
+            try:
+                new = json.loads(draft)
+            except ValueError:
+                new = draft
+            if not leaf(new):
+                new = draft
+            if isinstance(new, float) and (math.isnan(new) or math.isinf(new)):
+                raise ValueError("Enter a finite number.")
+            values[key] = new
+            paths[key] = ("store", key)
+            undo.append((key, MISSING, new))
+            del undo[:-50]
         if action == "undo" and undo:
             name, old, new = undo[-1]
             obj, k = slot(name)
             if type(obj[k]) is not type(new) or obj[k] != new:
                 raise ValueError("The game changed this value after your edit.")
-            obj[k] = old
+            if old is MISSING:
+                del obj[k]
+                paths.pop(name)
+                frozen.pop(name, None)
+                watched.discard(name)
+                baseline.pop(name, None)
+            else:
+                obj[k] = old
             undo.pop()
             if name in frozen:
                 frozen[name] = old
@@ -351,18 +424,8 @@ def process(req):
                 else:
                     frozen[key] = old
             else:
-                draft = req["draft"]
-                if type(old) is bool:
-                    if draft.lower() not in ("true", "false"):
-                        raise ValueError("Choose true or false.")
-                    new = draft.lower() == "true"
-                elif isinstance(old, bytes) and not isinstance(old, text_type):
-                    new = draft.encode("utf-8")
-                else:
-                    new = type(old)(draft)
-                if isinstance(new, float) and (math.isnan(new) or math.isinf(new)):
-                    raise ValueError("Enter a finite number.")
-                if new != old:
+                new = converted(req["draft"], req.get("valueType", "Original"), old)
+                if type(new) is not type(old) or new != old:
                     undo.append((key, old, new))
                     del undo[:-50]
                     obj[k] = new
@@ -389,11 +452,27 @@ def process(req):
         if section == "values":
             obj, k = slot(name)
             value = obj[k]
-            changed = name in baseline and baseline[name] != value
+            changed = name in baseline and (type(baseline[name]) is not type(value) or baseline[name] != value)
             baseline.setdefault(name, value)
             if mode == "Watching" and name not in watched or mode == "Changed" and not changed or mode == "Frozen" and name not in frozen:
                 continue
-            if query and query not in name.lower() and query not in plain(value).lower():
+            if mode in ("Increased", "Decreased"):
+                old = baseline[name]
+                if type(old) not in numbers or type(value) not in numbers:
+                    continue
+                if mode == "Increased" and value <= old or mode == "Decreased" and value >= old:
+                    continue
+            scope = req.get("scope", "Name or value")
+            terms = []
+            if scope != "Value":
+                terms.append(name.lower())
+            if scope != "Name":
+                terms.append(plain(value).lower())
+            wildcard = "*" in query or "?" in query
+            if query and not any(fnmatch.fnmatchcase(term, query) if wildcard else query in term for term in terms):
+                continue
+            if not offset <= total < offset + 40:
+                total += 1
                 continue
             entry = row(name, plain(value)[:2048], type(value).__name__)
             entry["truncated"] = len(plain(value)) > 2048
@@ -404,7 +483,8 @@ def process(req):
         if offset <= total < offset + 40:
             rows.append(entry)
         total += 1
-    return dict(rows=rows, total=total, enabled=section in enabled, canUndo=bool(undo))
+    return dict(rows=rows, total=total, enabled=section in enabled, canUndo=bool(undo),
+                limited=section == "values" and limited)
 
 
 def dispatch(path, raw):
@@ -419,18 +499,8 @@ def dispatch(path, raw):
             result = dict(rows=[], total=len(mod_actions), enabled=False, canUndo=False, activated=key is not None)
             if key is not None:
                 launch = lambda: renpy.display.behavior.run(mod_actions[key])
-        elif section == "values" and (action == "urm" or
-                action == "list" and hasattr(getattr(renpy.store, "x52URM", None), "Open")):
-            editor = getattr(renpy.store, "x52URM", None)
-            if not hasattr(editor, "Open"):
-                raise ValueError("Universal Ren'Py Mod is not loaded.")
-            result = dict(rows=[], total=0, enabled=False, canUndo=False)
-            if action == "urm":
-                launch = editor.Open("search")
         else:
             result = process(req)
-        if section == "values":
-            result["urmAvailable"] = hasattr(getattr(renpy.store, "x52URM", None), "Open")
         if action == "link" and section == "mods":
             targets = [(rect, signature) for rect, signature, _ in focus_targets()]
             if not targets:

@@ -311,16 +311,7 @@ final class Session {
             return -1
         }
         try FileManager.default.createDirectory(at: novel.saves, withIntermediateDirectories: true)
-        let stagedEditor = GameWorkbench.editorArchive(in: novel.root)
-        if FileManager.default.fileExists(atPath: stagedEditor.path) {
-            let name = stagedEditor.deletingPathExtension().lastPathComponent
-            if let existing = LibraryStore.installedMods(for: novel).first(where: { $0.name == name }) {
-                if !existing.enabled { try LibraryStore.setMod(existing.id, enabled: true, on: novel) }
-            } else {
-                try LibraryStore.installMod(stagedEditor, on: novel)
-            }
-            try FileManager.default.removeItem(at: stagedEditor)
-        }
+        try LibraryStore.removeLegacyValueEditor(for: novel)
         let startedAt = Date.now
         let displayConfiguration = novel.root.appending(path: ".renios-display.json")
         let fillScreen = novel.fillScreen ?? false
