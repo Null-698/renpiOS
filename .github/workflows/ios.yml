@@ -1,0 +1,87 @@
+name: iOS builds
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build reniOS with Xcode 27
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/cache/restore@v4
+        id: engine-cache
+        with:
+          path: .build/downloads
+          key: renpy-catalog-${{ hashFiles('Scripts/prepare.py') }}
+          restore-keys: renpy-catalog-
+      - name: Prepare bundled Ren’Py engines
+        run: >
+          python3 Scripts/prepare.py 8.6.0 --legacy
+          7.4.11 7.5.3 7.6.3 7.7.3 7.8.4 7.8.7
+          8.0.3 8.1.3 8.2.3 8.3.4 8.3.7 8.4.1 8.5.0 8.5.2 8.5.3
+      - uses: actions/cache/save@v4
+        if: steps.engine-cache.outputs.cache-hit != 'true'
+        with:
+          path: .build/downloads
+          key: renpy-catalog-${{ hashFiles('Scripts/prepare.py') }}
+      - name: Build unsigned iPhone archive
+        run: bash Scripts/package.sh
+      - name: Upload iPhone IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: reniOS-IPA
+          path: out/reniOS-unsigned.ipa
+          if-no-files-found: error
+      - name: Build the iOS 27 simulator app
+        run: |
+          bash Scripts/build-simulator.sh
+          ditto -c -k --keepParent .build/simulator/Build/Products/Debug-iphonesimulator/reniOS.app out/reniOS-simulator.zip
+      - name: Upload iOS 27 simulator app
+        uses: actions/upload-artifact@v4
+        with:
+          name: reniOS-simulator
+          path: out/reniOS-simulator.zip
+          if-no-files-found: error
+
+  preview:
+    name: Launcher previews · iOS 27
+    needs: build
+    runs-on: xcode-27
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: reniOS-simulator
+          path: out
+      - name: Capture launcher and management previews
+        continue-on-error: true
+        run: |
+          ditto -x -k out/reniOS-simulator.zip out
+          bash Scripts/simulator.sh 27 "$PWD/out/reniOS.app"
+      - name: Upload launcher previews
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher-previews-iOS-27
+          path: out/launcher-preview/*.png
+          if-no-files-found: warn
+      - name: Upload preview logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher-preview-logs-iOS-27
+          path: out/preview-logs/*.log
+          if-no-files-found: ignore
