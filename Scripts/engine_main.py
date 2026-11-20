@@ -101,7 +101,7 @@ def play():
 
 
 def consume_confirmed_exit():
-    """Consume the launcher’s one-shot confirmation for the current game."""
+    """Consume the one-shot launcher confirmation for the current game."""
     marker = os.path.join(sys.argv[1], ".renios-confirmed-exit")
     try:
         os.remove(marker)

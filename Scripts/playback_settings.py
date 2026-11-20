@@ -37,7 +37,12 @@ def begin(options):
             return errno.ENETUNREACH
         for name in ("connect", "connect_ex", "sendto", "sendmsg"):
             if hasattr(socket.socket, name):
-                replace(socket.socket, name, unreachable if name == "connect_ex" else denied)
+                handler = unreachable if name == "connect_ex" else denied
+                if name in getattr(socket.socket, "__slots__", ()):
+                    # Python 2 initializes delegated socket methods in instance slots.
+                    slot = vars(socket.socket)[name]
+                    handler = property(lambda self, fn=handler: fn, slot.__set__, slot.__delete__)
+                replace(socket.socket, name, handler)
         for name in ("create_connection", "getaddrinfo", "gethostbyname", "gethostbyname_ex", "gethostbyaddr"):
             if hasattr(socket, name):
                 replace(socket, name, denied)
