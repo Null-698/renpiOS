@@ -1,18 +1,20 @@
 import SwiftUI
+import CryptoKit
 
-private struct ToolEntry: Decodable, Identifiable {
+struct ToolEntry: Decodable, Identifiable {
     let name, value, kind: String
     let watched, frozen: Bool
     let truncated: Bool?
     var id: String { name }
 }
 
-private struct ToolReply: Decodable {
+struct ToolReply: Decodable {
     let id: String
     let rows: [ToolEntry]
     let total: Int
     let enabled, canUndo: Bool
     let error: String?
+    let activated, urmAvailable: Bool?
 }
 
 private enum ToolPage: String, CaseIterable, Identifiable {
@@ -40,6 +42,7 @@ struct GameWorkbench: View {
     @State private var offset = 0
     @State private var reply: ToolReply?
     @State private var busy = false
+    @State private var editorStaged = false
     @State private var message: String?
     @State private var editing: ToolEntry?
     @State private var draft = ""
@@ -63,8 +66,17 @@ struct GameWorkbench: View {
                     if wide && !mods { VStack(spacing: 6) { tabs }.frame(width: 140) }
                     VStack(alignment: .leading, spacing: 8) {
                         if !wide && !mods { HStack(spacing: 5) { tabs } }
-                        if !mods { search }
-                        if current == .values { filters }
+                        if !mods && (current != .values || reply?.urmAvailable != true) { search }
+                        if current == .values {
+                            Button(reply?.urmAvailable == true ? "Open URM value editor" : "Install URM value editor") {
+                                if reply?.urmAvailable == true { command("urm", dismiss: true) }
+                                else { Task { await installEditor() } }
+                            }.buttonStyle(.glass).disabled(busy || reply == nil)
+                            if editorStaged && reply?.urmAvailable != true {
+                                Text("Exit and reopen this game to enable the URM value editor.").font(.footnote)
+                            }
+                            if reply?.urmAvailable != true { filters }
+                        }
                         if current == .gallery || current == .replays {
                             Toggle(current == .gallery ? "Unlock game gallery" : "Unlock game replays",
                                    isOn: Binding(get: { reply?.enabled ?? false }, set: { _ in command("toggle") }))
@@ -74,7 +86,7 @@ struct GameWorkbench: View {
                         ScrollView {
                             LazyVStack(spacing: 6) {
                                 ForEach(reply?.rows ?? []) { entry in entryRow(entry) }
-                                if let reply, reply.rows.isEmpty {
+                                if let reply, reply.rows.isEmpty, current != .values || reply.urmAvailable != true {
                                     Text(mods ? "No named mod buttons found in this scene." : "No matching items.")
                                         .foregroundStyle(.secondary).padding(12)
                                 }
@@ -105,9 +117,10 @@ struct GameWorkbench: View {
             if !Task.isCancelled { _ = await send("list") }
         }
         .task {
+            editorStaged = FileManager.default.fileExists(atPath: Self.editorArchive(in: request.deletingLastPathComponent()).path)
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
-                if !Task.isCancelled && current == .values && !busy && editing == nil && !searching {
+                if !Task.isCancelled && current == .values && reply?.urmAvailable != true && !busy && editing == nil && !searching {
                     _ = await send("list")
                 }
             }
@@ -231,25 +244,56 @@ struct GameWorkbench: View {
         guard !Task.isCancelled else { return false }
         busy = true
         defer { busy = false }
-        let id = UUID().uuidString
-        let payload: [String: Any] = ["id": id, "section": current.rawValue, "action": action, "key": key,
-                                       "query": query, "filter": filter, "draft": draft, "offset": offset]
-        let response = URL(fileURLWithPath: request.path + ".reply")
+        let payload: [String: Any] = ["section": current.rawValue, "action": action, "key": key,
+                                      "query": query, "filter": filter, "draft": draft, "offset": offset]
         do {
-            try JSONSerialization.data(withJSONObject: payload).write(to: request, options: .atomic)
-            for _ in 0..<55 {
-                try await Task.sleep(for: .milliseconds(100))
-                if let data = try? Data(contentsOf: response),
-                   let result = try? JSONDecoder().decode(ToolReply.self, from: data), result.id == id {
-                    try? FileManager.default.removeItem(at: response)
-                    message = result.error
-                    if result.error == nil { reply = result }
-                    return result.error == nil
-                }
-            }
-            message = "The game hasn’t responded. Open the tools when the scene is ready."
+            let result = try await Self.exchange(payload, at: request)
+            message = result.error
+            if result.error == nil { reply = result }
+            return result.error == nil
         } catch is CancellationError { return false }
-        catch { message = error.localizedDescription }
-        return false
+        catch { message = error.localizedDescription; return false }
+    }
+
+    @MainActor static func exchange(_ fields: [String: Any], at request: URL) async throws -> ToolReply {
+        let id = UUID().uuidString
+        var payload = fields
+        payload["id"] = id
+        let response = URL(fileURLWithPath: request.path + ".reply")
+        try JSONSerialization.data(withJSONObject: payload).write(to: request, options: .atomic)
+        for _ in 0..<55 {
+            try await Task.sleep(for: .milliseconds(100))
+            if let data = try? Data(contentsOf: response),
+               let result = try? JSONDecoder().decode(ToolReply.self, from: data), result.id == id {
+                try? FileManager.default.removeItem(at: response)
+                return result
+            }
+        }
+        throw URLError(.timedOut)
+    }
+
+    static func editorArchive(in root: URL) -> URL {
+        root.appending(path: ".renios-tools/Universal Ren'Py Mod.zip")
+    }
+
+    @MainActor private func installEditor() async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let archive = Self.editorArchive(in: request.deletingLastPathComponent())
+            if !FileManager.default.fileExists(atPath: archive.path) {
+                let url = URL(string: "https://api.0x52.dev/modversions/1223/download")!
+                let (data, response) = try await URLSession.shared.data(from: url)
+                guard (response as? HTTPURLResponse)?.statusCode == 200,
+                      SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined()
+                        == "00c548b250c7a264417f5d44b6b0ceb888474d1f9cbcda590e49ea71239292c7" else {
+                    throw URLError(.cannotDecodeContentData)
+                }
+                try FileManager.default.createDirectory(at: archive.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: archive, options: .atomic)
+            }
+            editorStaged = true
+        } catch { message = error.localizedDescription }
     }
 }

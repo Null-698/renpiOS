@@ -311,6 +311,16 @@ final class Session {
             return -1
         }
         try FileManager.default.createDirectory(at: novel.saves, withIntermediateDirectories: true)
+        let stagedEditor = GameWorkbench.editorArchive(in: novel.root)
+        if FileManager.default.fileExists(atPath: stagedEditor.path) {
+            let name = stagedEditor.deletingPathExtension().lastPathComponent
+            if let existing = LibraryStore.installedMods(for: novel).first(where: { $0.name == name }) {
+                if !existing.enabled { try LibraryStore.setMod(existing.id, enabled: true, on: novel) }
+            } else {
+                try LibraryStore.installMod(stagedEditor, on: novel)
+            }
+            try FileManager.default.removeItem(at: stagedEditor)
+        }
         let startedAt = Date.now
         let displayConfiguration = novel.root.appending(path: ".renios-display.json")
         let fillScreen = novel.fillScreen ?? false
@@ -461,7 +471,20 @@ private final class PlaybackControlsController: UIViewController {
         positionControls()
     }
 
+    private var checkingMod = false
+
     private func openTools(_ kind: String) {
+        guard let toolsRequest, presentedViewController == nil, !checkingMod else { return }
+        guard kind == "mods" else { presentTools(kind); return }
+        checkingMod = true
+        Task { @MainActor in
+            defer { checkingMod = false }
+            let result = try? await GameWorkbench.exchange(["section": "mods", "action": "activate"], at: toolsRequest)
+            if result?.activated != true && view.window != nil { presentTools("mods") }
+        }
+    }
+
+    private func presentTools(_ kind: String) {
         guard let toolsRequest, presentedViewController == nil else { return }
         let host = UIHostingController(rootView: GameWorkbench(request: toolsRequest, mods: kind == "mods",
             close: { [weak self] in self?.dismiss(animated: true) },
@@ -860,7 +883,7 @@ private struct LibraryScreen: View {
                     if let feature {
                         if wide {
                             GeometryReader { bounds in
-                                let availableHeight = max(0, bounds.size.height - bounds.safeAreaInsets.bottom - 12)
+                                let availableHeight = max(0, bounds.size.height - 2)
                                 Group {
                                     if ThemeSelection.shared.current == .tide {
                                         tideLauncher(feature: feature, games: games)
@@ -910,11 +933,7 @@ private struct LibraryScreen: View {
                 AppSettingsView(initialPage: previewName?.components(separatedBy: "@").first?.replacingOccurrences(of: "-light", with: "") == "Appearance" ? .appearance : nil)
             }
 
-            Tab("Import", systemImage: "plus", value: .importGame) {
-                EmptyView()
-            }
-
-            Tab(value: .search, role: .search) {
+            Tab("Search", systemImage: "magnifyingglass", value: .search) {
                 let query = filter.trimmingCharacters(in: .whitespacesAndNewlines)
                 let matches = query.isEmpty ? games : games.filter { $0.title.localizedCaseInsensitiveContains(query) }
                 NavigationStack {
@@ -935,10 +954,14 @@ private struct LibraryScreen: View {
                     .navigationBarTitleDisplayMode(.inline)
 
                 }
-                .searchable(text: $filter, isPresented: $searchPresented, prompt: "Search games")
+                .searchable(text: $filter, isPresented: $searchPresented, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search games")
+                .onAppear { searchPresented = true }
+            }
+
+            Tab("Import", systemImage: "plus", value: .importGame) {
+                EmptyView()
             }
         }
-        .tabViewSearchActivation(.searchTabSelection)
     }
 
     private var visibleHistory: PlayHistory {
@@ -1087,7 +1110,7 @@ private struct LibraryScreen: View {
         GeometryReader { geometry in
             let width = geometry.size.width
             let cardWidth = min(640, width * 0.66)
-            let cardHeight = max(0, geometry.size.height - 18)
+            let cardHeight = max(0, geometry.size.height - 8)
             let stride = cardWidth + 16
             let center = games.firstIndex(where: { $0.id == feature.id }) ?? 0
             let visible = max(0, center - 2)...min(games.count - 1, center + 2)

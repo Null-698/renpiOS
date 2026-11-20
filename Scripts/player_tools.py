@@ -231,6 +231,7 @@ def find_buttons():
                 branch.extend(children(child))
         if title:
             mod_actions[title] = action
+    visible = sorted(mod_actions, key=lambda title: (title.lower() != "mod", title.lower()))
     for name, _ in renpy.display.screen.screens:
         if not mod_title(name) or name.startswith("_") or name in mod_actions:
             continue
@@ -245,7 +246,8 @@ def find_buttons():
             x, y, w, h = rect
             if candidate == signature and x <= cx <= x + w and y <= cy <= y + h:
                 mod_actions["Linked button"] = action
-                break
+                return "Linked button"
+    return next(iter(visible or sorted(mod_actions)), None)
 
 
 def leaf(value):
@@ -412,7 +414,23 @@ def dispatch(path, raw):
     section = req.get("section")
     launch = None
     try:
-        result = process(req)
+        if action == "activate" and section == "mods":
+            key = find_buttons()
+            result = dict(rows=[], total=len(mod_actions), enabled=False, canUndo=False, activated=key is not None)
+            if key is not None:
+                launch = lambda: renpy.display.behavior.run(mod_actions[key])
+        elif section == "values" and (action == "urm" or
+                action == "list" and hasattr(getattr(renpy.store, "x52URM", None), "Open")):
+            editor = getattr(renpy.store, "x52URM", None)
+            if not hasattr(editor, "Open"):
+                raise ValueError("Universal Ren'Py Mod is not loaded.")
+            result = dict(rows=[], total=0, enabled=False, canUndo=False)
+            if action == "urm":
+                launch = editor.Open("search")
+        else:
+            result = process(req)
+        if section == "values":
+            result["urmAvailable"] = hasattr(getattr(renpy.store, "x52URM", None), "Open")
         if action == "link" and section == "mods":
             targets = [(rect, signature) for rect, signature, _ in focus_targets()]
             if not targets:
@@ -437,6 +455,6 @@ def dispatch(path, raw):
     os.rename(temp, path + ".reply")
     if launch:
         rv = launch()
-        if action == "open" and section == "mods" and rv is not None:
+        if action in ("open", "activate") and section == "mods" and rv is not None:
             renpy.exports.end_interaction(rv)
         renpy.exports.restart_interaction()
